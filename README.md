@@ -1,5 +1,7 @@
 # C++ Qt Widgets App
 
+Chinese setup guide: [README.zh-CN.md](README.zh-CN.md). Dependency/version alignment guide: [requirements.md](requirements.md).
+
 This directory contains the first-stage C++ Qt6 Widgets rewrite of the aircraft RF workflow desktop app.
 
 ## Toolchain
