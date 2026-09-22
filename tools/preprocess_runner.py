@@ -27,11 +27,11 @@ def main() -> int:
     preprocess_dir = repo_root / "preprocess_integration"
     sys.path.insert(0, str(preprocess_dir))
 
-    from reprocess_classify_model1_0420 import run_inference_api  # noqa: E402
+    from iqraw_preprocess_runner import run  # noqa: E402
 
-    result = run_inference_api(**request)
+    result = run(request)
     _write_response(response_path, result)
-    return 0
+    return 0 if result.get("success") else 1
 
 
 if __name__ == "__main__":

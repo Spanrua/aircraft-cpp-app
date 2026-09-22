@@ -1,0 +1,75 @@
+#pragma once
+
+#include "services/CeyearPscSweep.h"
+#include "ui/pages/WorkflowPage.h"
+
+#include <memory>
+
+class ICeyearVisaService;
+class CeyearPscReceiver;
+struct CeyearCaptureResult;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QTableWidget;
+class QThread;
+class WaterfallWidget;
+
+class SweepPage : public WorkflowPage
+{
+    Q_OBJECT
+
+public:
+    explicit SweepPage(QWidget *parent = nullptr);
+    explicit SweepPage(std::unique_ptr<ICeyearVisaService> ceyearService, QWidget *parent = nullptr);
+    ~SweepPage() override;
+
+    void appendPscFrameForTest(const CeyearPscFrame &frame);
+    void setCandidateRowsForTest(const QVector<CeyearPscCandidate> &candidates);
+
+signals:
+    void frequencyConfirmed(double frequencyHz);
+
+private:
+    void buildUi();
+    void seedDefaultSegments();
+    QString segmentCellText(int row, int column) const;
+    CeyearPscSweepConfig sweepConfigFromTable() const;
+    void startSweep();
+    void stopSweep();
+    bool startPscReceiver(const CeyearPscSweepConfig &config);
+    void startPscSweepAsync(const CeyearPscSweepConfig &config);
+    void stopPscSweepAsync();
+    void finalizePscSweepStart(const CeyearCaptureResult &result);
+    void finalizePscSweepStop(const CeyearCaptureResult &result);
+    void resetPscVisualization(const CeyearPscSweepConfig &config);
+    void handlePscFrames(const QVector<CeyearPscFrame> &frames);
+    void updatePscReceiveStatus();
+    void appendPscFrame(const CeyearPscFrame &frame);
+    void setCandidateRows(const QVector<CeyearPscCandidate> &candidates);
+    void confirmSelectedCandidate();
+    void saveSweepData();
+    void autoSaveSweepData();
+
+    std::unique_ptr<ICeyearVisaService> m_ceyearService;
+    std::unique_ptr<CeyearPscReceiver> m_pscReceiver;
+    QThread *m_pscCommandThread = nullptr;
+    CeyearPscCandidateExtractor m_candidateExtractor;
+    QVector<CeyearPscFrame> m_pscFrames;
+    QString m_pscSweepMessage;
+    qint64 m_pscBytesReceived = 0;
+    qint64 m_pscDatagramCount = 0;
+    int m_pscFrameCount = 0;
+    bool m_pscSweepActive = false;
+    int m_autoSaveCounter = 0;
+    QTimer *m_autoSaveTimer = nullptr;
+    QTableWidget *m_segmentTable = nullptr;
+    QLineEdit *m_hitThresholdEdit = nullptr;
+    QLabel *m_statusLabel = nullptr;
+    QPushButton *m_startButton = nullptr;
+    QPushButton *m_stopButton = nullptr;
+    QPushButton *m_saveButton = nullptr;
+    WaterfallWidget *m_waterfall = nullptr;
+    QTableWidget *m_candidateTable = nullptr;
+    QPushButton *m_confirmButton = nullptr;
+};

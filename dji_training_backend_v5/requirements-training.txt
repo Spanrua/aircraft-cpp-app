@@ -1,0 +1,6 @@
+# Runtime for training_backend.py and CNNTRANS_v5_3943B.py
+numpy
+torch
+scikit-learn
+matplotlib
+tqdm

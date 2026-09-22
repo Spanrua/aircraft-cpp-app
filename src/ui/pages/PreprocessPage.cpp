@@ -6,498 +6,752 @@
 #include "services/PreprocessProcessRunner.h"
 #include "ui/widgets/MetricCard.h"
 
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
-#include <QHeaderView>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMetaObject>
-#include <QFrame>
+#include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
-#include <QStyle>
+#include <QSaveFile>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QThread>
 #include <QVBoxLayout>
+#include <QPixmap>
+
+#include <algorithm>
 
 namespace
 {
-constexpr int kPathEditMinWidth = 520;
-constexpr int kPathEditMinHeight = 42;
-constexpr int kParameterEditMinWidth = 180;
-constexpr int kParameterEditMinHeight = 42;
+constexpr int kEditorHeight = 38;
+constexpr int kPathWidth = 520;
 
-QTableWidgetItem *readonlyItem(const QString &text)
+QFrame *sectionFrame(const QString &name, const QString &title, QWidget *parent, QVBoxLayout **layoutOut)
 {
-    auto *item = new QTableWidgetItem(text);
-    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    return item;
-}
-
-void refreshWidgetStyle(QWidget *widget)
-{
-    if (!widget) {
-        return;
+    auto *frame = new QFrame(parent);
+    frame->setObjectName(name);
+    frame->setFrameShape(QFrame::StyledPanel);
+    auto *layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(10);
+    auto *titleLabel = new QLabel(title, frame);
+    titleLabel->setObjectName(name + QStringLiteral("Title"));
+    titleLabel->setProperty("sectionTitle", true);
+    layout->addWidget(titleLabel);
+    if (layoutOut) {
+        *layoutOut = layout;
     }
-    widget->style()->unpolish(widget);
-    widget->style()->polish(widget);
-    widget->update();
+    return frame;
 }
 
-QWidget *fieldBlock(const QString &label, QWidget *editor, QWidget *parent)
+QLineEdit *edit(const QString &name, const QString &value, QWidget *parent, int width = 180)
+{
+    auto *widget = new QLineEdit(value, parent);
+    widget->setObjectName(name);
+    widget->setMinimumHeight(kEditorHeight);
+    widget->setMinimumWidth(width);
+    return widget;
+}
+
+QWidget *field(const QString &caption, QWidget *editor, QWidget *parent)
 {
     auto *container = new QWidget(parent);
     auto *layout = new QVBoxLayout(container);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
-
-    auto *caption = new QLabel(label, container);
-    caption->setProperty("muted", true);
-    layout->addWidget(caption);
+    layout->setSpacing(4);
+    auto *label = new QLabel(caption, container);
+    label->setProperty("muted", true);
+    layout->addWidget(label);
     layout->addWidget(editor);
     return container;
 }
 
-QFrame *panelFrame(const QString &objectName, QWidget *parent)
+QTableWidgetItem *readonlyItem(const QString &text, const QString &path = QString())
 {
-    auto *frame = new QFrame(parent);
-    frame->setObjectName(objectName);
-    frame->setFrameShape(QFrame::StyledPanel);
-    frame->setFrameShadow(QFrame::Plain);
-    return frame;
-}
-
-QLineEdit *parameterEdit(const QString &objectName, const QString &value, QWidget *parent)
-{
-    auto *edit = new QLineEdit(value, parent);
-    edit->setObjectName(objectName);
-    edit->setMinimumHeight(kParameterEditMinHeight);
-    edit->setMinimumWidth(kParameterEditMinWidth);
-    return edit;
-}
-
-QLineEdit *pathEdit(const QString &objectName, const QString &value, QWidget *parent)
-{
-    auto *edit = new QLineEdit(value, parent);
-    edit->setObjectName(objectName);
-    edit->setMinimumHeight(kPathEditMinHeight);
-    edit->setMinimumWidth(kPathEditMinWidth);
-    return edit;
-}
-
-QFrame *workbenchColumn(const QString &objectName, const QString &title, QWidget *parent, QVBoxLayout **layoutOut)
-{
-    auto *column = panelFrame(objectName, parent);
-    column->setMinimumWidth(objectName == QStringLiteral("PreprocessParametersColumn") ? 620 : 360);
-
-    auto *layout = new QVBoxLayout(column);
-    layout->setContentsMargins(18, 18, 18, 18);
-    layout->setSpacing(12);
-
-    auto *titleLabel = new QLabel(title, column);
-    titleLabel->setObjectName(objectName + QStringLiteral("Title"));
-    titleLabel->setProperty("sectionTitle", true);
-    layout->addWidget(titleLabel);
-
-    if (layoutOut) {
-        *layoutOut = layout;
+    auto *item = new QTableWidgetItem(text);
+    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    if (!path.isEmpty()) {
+        item->setData(Qt::UserRole, path);
     }
-    return column;
+    return item;
 }
 
-double readDouble(const QLineEdit *edit, double fallback)
+QString mhz(double hz)
 {
-    bool ok = false;
-    const double value = edit ? edit->text().trimmed().toDouble(&ok) : fallback;
-    return ok ? value : fallback;
+    return hz > 0.0 ? QStringLiteral("%1 MHz").arg(hz / 1000000.0, 0, 'f', 3) : QStringLiteral("-");
 }
 
-int readInt(const QLineEdit *edit, int fallback)
+QString fileSizeText(qint64 bytes)
+{
+    if (bytes >= 1024ll * 1024ll * 1024ll) {
+        return QStringLiteral("%1 GB").arg(bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 2);
+    }
+    if (bytes >= 1024ll * 1024ll) {
+        return QStringLiteral("%1 MB").arg(bytes / 1024.0 / 1024.0, 0, 'f', 2);
+    }
+    return QStringLiteral("%1 KB").arg(bytes / 1024.0, 0, 'f', 1);
+}
+
+bool readInt(const QLineEdit *widget, const QString &label, int min, int max, int *value, QString *error)
 {
     bool ok = false;
-    const int value = edit ? edit->text().trimmed().toInt(&ok) : fallback;
-    return ok ? value : fallback;
+    const int parsed = widget ? widget->text().trimmed().toInt(&ok) : 0;
+    if (!ok || parsed < min || parsed > max) {
+        if (error) {
+            *error = QStringLiteral("%1必须是 %2 到 %3 之间的整数。").arg(label).arg(min).arg(max);
+        }
+        return false;
+    }
+    if (value) {
+        *value = parsed;
+    }
+    return true;
+}
+
+bool readDouble(const QLineEdit *widget, const QString &label, double min, double max, double *value, QString *error)
+{
+    bool ok = false;
+    const double parsed = widget ? widget->text().trimmed().toDouble(&ok) : 0.0;
+    if (!ok || parsed < min || parsed > max) {
+        if (error) {
+            *error = QStringLiteral("%1必须是 %2 到 %3 之间的数值。").arg(label).arg(min).arg(max);
+        }
+        return false;
+    }
+    if (value) {
+        *value = parsed;
+    }
+    return true;
+}
+
+QString latestIqrawPath()
+{
+    const QDir rawDir(QDir(ProjectPaths::dataDirectory()).filePath(QStringLiteral("raw")));
+    const auto files = rawDir.entryInfoList({QStringLiteral("*.iqraw"), QStringLiteral("*.IQRAW")},
+                                            QDir::Files | QDir::Readable,
+                                            QDir::Time);
+    for (const QFileInfo &file : files) {
+        if (file.size() > 0) {
+            return file.absoluteFilePath();
+        }
+    }
+    return {};
+}
+
+QString stateForResult(const PreprocessRunResult &result)
+{
+    if (result.cancelled) {
+        return QStringLiteral("部分完成");
+    }
+    if (result.timedOut) {
+        return QStringLiteral("部分完成");
+    }
+    if (result.partial) {
+        return QStringLiteral("部分完成");
+    }
+    return result.success ? QStringLiteral("已完成") : QStringLiteral("失败");
 }
 } // namespace
 
 PreprocessPage::PreprocessPage(QWidget *parent)
-    : WorkflowPage(QStringLiteral("信号预处理"), QStringLiteral("读取 CAP 头信息，配置切片与样本输出参数，并启动预处理任务。"), parent, true)
+    : WorkflowPage(QStringLiteral("信号预处理"),
+                   QStringLiteral("确认采集文件，选择处理方案，生成可复核的候选片段和样本。"),
+                   parent,
+                   true)
 {
     buildUi();
 }
 
 PreprocessPage::~PreprocessPage()
 {
-    if (m_preprocessThread) {
-        m_preprocessThread->quit();
-        m_preprocessThread->wait();
+    if (m_processRunner && m_processRunner->isRunning()) {
+        m_processRunner->cancel();
     }
+}
+
+void PreprocessPage::setInputFilePath(const QString &filePath)
+{
+    const QString path = filePath.trimmed();
+    if (path.isEmpty() || !QFileInfo::exists(path) || !m_capPathEdit) {
+        return;
+    }
+    m_capPathEdit->setText(path);
+    m_inputConfirmed = false;
+    setValidationMessage(QStringLiteral("采集文件已带入，请点击“读取并确认”后再开始处理。"), QStringLiteral("neutral"));
+    m_inputFileSummaryLabel->setText(QStringLiteral("尚未确认输入文件：%1").arg(QFileInfo(path).fileName()));
+    if (m_capMetric) {
+        m_capMetric->setValue(QStringLiteral("待确认"));
+    }
+}
+
+bool PreprocessPage::isInputConfirmed() const
+{
+    return m_inputConfirmed;
+}
+
+bool PreprocessPage::isRunning() const
+{
+    return m_processRunner && m_processRunner->isRunning();
+}
+
+bool PreprocessPage::hasResults() const
+{
+    return !m_latestResult.segments.isEmpty() || !m_latestResult.sampleRecords.isEmpty();
 }
 
 void PreprocessPage::buildUi()
 {
-    if (auto *scrollContent = findChild<QWidget *>(QStringLiteral("WorkflowPageScrollContent"))) {
-        scrollContent->setMinimumHeight(720);
+    if (auto *content = findChild<QWidget *>(QStringLiteral("WorkflowPageScrollContent"))) {
+        content->setMinimumHeight(980);
     }
 
-    auto *workbench = new QHBoxLayout();
-    workbench->setSpacing(14);
+    auto *inputLayout = static_cast<QVBoxLayout *>(nullptr);
+    auto *inputSection = sectionFrame(QStringLiteral("PreprocessInputColumn"), QStringLiteral("1. 确认输入文件"), this, &inputLayout);
 
-    QVBoxLayout *inputLayout = nullptr;
-    auto *inputColumn = workbenchColumn(QStringLiteral("PreprocessInputColumn"), QStringLiteral("输入"), this, &inputLayout);
-
-    m_capPathEdit = pathEdit(QStringLiteral("PreprocessCapPathEdit"), QDir(ProjectPaths::workspaceRoot()).filePath("IQ_2025_01_09_13_55_30.cap"), inputColumn);
-    m_capPathEdit->setPlaceholderText(QStringLiteral("选择或输入 .cap 文件路径"));
-    inputLayout->addWidget(fieldBlock(QStringLiteral("CAP 文件"), m_capPathEdit, inputColumn));
-
-    auto *fileActions = new QHBoxLayout();
-    auto *browseButton = new QPushButton(QStringLiteral("选择文件"), inputColumn);
+    const QString recent = latestIqrawPath();
+    m_capPathEdit = edit(QStringLiteral("PreprocessCapPathEdit"), recent, inputSection, kPathWidth);
+    m_capPathEdit->setPlaceholderText(QStringLiteral("选择 .iqraw 或 .cap 文件"));
+    auto *browseButton = new QPushButton(QStringLiteral("选择文件"), inputSection);
     browseButton->setObjectName(QStringLiteral("PreprocessBrowseCapButton"));
-    m_previewButton = new QPushButton(QStringLiteral("读取头信息"), inputColumn);
+    m_previewButton = new QPushButton(QStringLiteral("读取并确认"), inputSection);
     m_previewButton->setObjectName(QStringLiteral("PreprocessPreviewButton"));
     m_previewButton->setProperty("secondary", true);
-    fileActions->addWidget(browseButton);
-    fileActions->addWidget(m_previewButton);
-    inputLayout->addLayout(fileActions);
+    auto *pathField = new QWidget(inputSection);
+    auto *pathFieldLayout = new QVBoxLayout(pathField);
+    pathFieldLayout->setContentsMargins(0, 0, 0, 0);
+    pathFieldLayout->setSpacing(4);
+    auto *pathCaption = new QLabel(QStringLiteral("采集文件"), pathField);
+    pathCaption->setProperty("muted", true);
+    pathFieldLayout->addWidget(pathCaption);
+    auto *pathRow = new QHBoxLayout();
+    pathRow->setContentsMargins(0, 0, 0, 0);
+    pathRow->addWidget(m_capPathEdit, 1);
+    pathRow->addWidget(browseButton);
+    pathRow->addWidget(m_previewButton);
+    pathFieldLayout->addLayout(pathRow);
+    inputLayout->addWidget(pathField);
 
-    m_validationMessage = new QLabel(QStringLiteral("等待读取 CAP 文件。"), inputColumn);
+    m_validationMessage = new QLabel(recent.isEmpty() ? QStringLiteral("请选择一个 IQRAW 或 CAP 文件。")
+                                                       : QStringLiteral("已找到最近的 IQRAW 文件，请点击“读取并确认”。"),
+                                     inputSection);
     m_validationMessage->setObjectName(QStringLiteral("PreprocessValidationMessage"));
     m_validationMessage->setWordWrap(true);
-    m_validationMessage->setProperty("kind", QStringLiteral("neutral"));
     inputLayout->addWidget(m_validationMessage);
 
-    m_capMetric = new MetricCard(QStringLiteral("CAP 状态"), inputColumn);
-    m_capMetric->setValue(QStringLiteral("未读取"));
-    inputLayout->addWidget(m_capMetric);
+    m_inputFileSummaryLabel = new QLabel(QStringLiteral("尚未确认输入文件。"), inputSection);
+    m_inputFileSummaryLabel->setObjectName(QStringLiteral("PreprocessInputFileSummary"));
+    m_inputFileSummaryLabel->setWordWrap(true);
+    m_inputFileSummaryLabel->setProperty("muted", true);
+    inputLayout->addWidget(m_inputFileSummaryLabel);
 
-    auto *summaryBox = panelFrame(QStringLiteral("PreprocessSummaryPanel"), inputColumn);
-    auto *summaryLayout = new QFormLayout(summaryBox);
-    summaryLayout->setContentsMargins(14, 14, 14, 14);
-    summaryLayout->setSpacing(9);
-    auto *summaryTitle = new QLabel(QStringLiteral("CAP 摘要"), summaryBox);
-    summaryTitle->setProperty("muted", true);
-    summaryLayout->setWidget(0, QFormLayout::SpanningRole, summaryTitle);
-    m_versionLabel = new QLabel("-", summaryBox);
-    m_headerLengthLabel = new QLabel("-", summaryBox);
-    m_bandwidthLabel = new QLabel("-", summaryBox);
-    m_sampleRateLabel = new QLabel("-", summaryBox);
-    m_centerFrequencyLabel = new QLabel("-", summaryBox);
-    m_sampleCountLabel = new QLabel("-", summaryBox);
-    summaryLayout->addRow(QStringLiteral("版本"), m_versionLabel);
-    summaryLayout->addRow(QStringLiteral("头长度"), m_headerLengthLabel);
-    summaryLayout->addRow(QStringLiteral("带宽"), m_bandwidthLabel);
-    summaryLayout->addRow(QStringLiteral("采样率"), m_sampleRateLabel);
-    summaryLayout->addRow(QStringLiteral("中心频率"), m_centerFrequencyLabel);
-    summaryLayout->addRow(QStringLiteral("样本数"), m_sampleCountLabel);
-    inputLayout->addWidget(summaryBox);
-    inputLayout->addStretch();
-    workbench->addWidget(inputColumn, 3);
+    auto *summaryPanel = new QFrame(inputSection);
+    summaryPanel->setObjectName(QStringLiteral("PreprocessSummaryPanel"));
+    auto *summaryGrid = new QGridLayout(summaryPanel);
+    summaryGrid->setContentsMargins(12, 10, 12, 10);
+    summaryGrid->setHorizontalSpacing(22);
+    m_versionLabel = new QLabel("-", summaryPanel);
+    m_headerLengthLabel = new QLabel("-", summaryPanel);
+    m_bandwidthLabel = new QLabel("-", summaryPanel);
+    m_sampleRateLabel = new QLabel("-", summaryPanel);
+    m_centerFrequencyLabel = new QLabel("-", summaryPanel);
+    m_sampleCountLabel = new QLabel("-", summaryPanel);
+    const QList<QPair<QString, QLabel *>> metadata = {
+        {QStringLiteral("格式"), m_versionLabel},
+        {QStringLiteral("头/包长度"), m_headerLengthLabel},
+        {QStringLiteral("带宽"), m_bandwidthLabel},
+        {QStringLiteral("采样率"), m_sampleRateLabel},
+        {QStringLiteral("中心频率"), m_centerFrequencyLabel},
+        {QStringLiteral("样本数"), m_sampleCountLabel},
+    };
+    for (int index = 0; index < metadata.size(); ++index) {
+        auto *block = new QWidget(summaryPanel);
+        auto *blockLayout = new QVBoxLayout(block);
+        blockLayout->setContentsMargins(0, 0, 0, 0);
+        blockLayout->addWidget(new QLabel(metadata.at(index).first, block));
+        blockLayout->addWidget(metadata.at(index).second);
+        summaryGrid->addWidget(block, index / 3, index % 3);
+    }
+    inputLayout->addWidget(summaryPanel);
 
-    QVBoxLayout *parametersLayout = nullptr;
-    auto *parametersColumn = workbenchColumn(QStringLiteral("PreprocessParametersColumn"), QStringLiteral("预处理参数"), this, &parametersLayout);
+    auto *outputPanel = new QFrame(inputSection);
+    outputPanel->setObjectName(QStringLiteral("PreprocessPathParametersPanel"));
+    auto *outputLayout = new QHBoxLayout(outputPanel);
+    outputLayout->setContentsMargins(12, 8, 12, 8);
+    m_outputDirEdit = edit(QStringLiteral("PreprocessOutputDirEdit"),
+                           ProjectPaths::preprocessRunsDirectory(),
+                           outputPanel,
+                           kPathWidth);
+    auto *outputButton = new QPushButton(QStringLiteral("选择根目录"), outputPanel);
+    outputButton->setObjectName(QStringLiteral("PreprocessBrowseOutputDirButton"));
+    outputButton->setProperty("secondary", true);
+    outputLayout->addWidget(field(QStringLiteral("批次输出根目录"), m_outputDirEdit, outputPanel), 1);
+    outputLayout->addWidget(outputButton);
+    inputLayout->addWidget(outputPanel);
 
-    auto *hint = new QLabel(QStringLiteral("默认值适合先验证 USRP B210 采集的 CAP 文件；需要调算法时可直接修改数值。"), parametersColumn);
-    hint->setObjectName(QStringLiteral("PreprocessParametersHint"));
-    hint->setWordWrap(true);
-    hint->setProperty("muted", true);
-    parametersLayout->addWidget(hint);
+    auto *parameterLayout = static_cast<QVBoxLayout *>(nullptr);
+    auto *parameterSection = sectionFrame(QStringLiteral("PreprocessParametersColumn"), QStringLiteral("2. 选择处理方案"), this, &parameterLayout);
+    auto *schemeGrid = new QGridLayout();
+    schemeGrid->setHorizontalSpacing(14);
+    schemeGrid->setVerticalSpacing(10);
+    m_detectionModeCombo = new QComboBox(parameterSection);
+    m_detectionModeCombo->setObjectName(QStringLiteral("PreprocessDetectionModeCombo"));
+    m_detectionModeCombo->setMinimumHeight(kEditorHeight);
+    m_detectionModeCombo->addItem(QStringLiteral("推荐识别：适合常规 3943B 信号"), QStringLiteral("cv_band"));
+    m_detectionModeCombo->addItem(QStringLiteral("快速能量筛选：优先速度"), QStringLiteral("energy"));
+    m_detectionModeCombo->addItem(QStringLiteral("结构分割：适合脉冲形状"), QStringLiteral("shape"));
+    m_detectionModeCombo->addItem(QStringLiteral("固定频带窗口：按窗口导出"), QStringLiteral("band_window"));
+    m_payloadEndianCombo = new QComboBox(parameterSection);
+    m_payloadEndianCombo->setObjectName(QStringLiteral("PreprocessPayloadEndianCombo"));
+    m_payloadEndianCombo->setMinimumHeight(kEditorHeight);
+    m_payloadEndianCombo->addItem(QStringLiteral("小端 IQ"), QStringLiteral("little"));
+    m_payloadEndianCombo->addItem(QStringLiteral("大端 IQ"), QStringLiteral("big"));
+    m_exportSpectrogramCheck = new QCheckBox(QStringLiteral("生成时频图，处理时间更长"), parameterSection);
+    m_exportSpectrogramCheck->setObjectName(QStringLiteral("PreprocessExportSpectrogramCheck"));
+    m_exportSpectrogramCheck->setChecked(false);
+    schemeGrid->addWidget(field(QStringLiteral("处理方案"), m_detectionModeCombo, parameterSection), 0, 0, 1, 2);
+    schemeGrid->addWidget(field(QStringLiteral("IQRAW 载荷字节序"), m_payloadEndianCombo, parameterSection), 1, 0);
+    schemeGrid->addWidget(m_exportSpectrogramCheck, 1, 1, Qt::AlignLeft | Qt::AlignVCenter);
+    parameterLayout->addLayout(schemeGrid);
 
-    m_outputDirEdit = pathEdit(QStringLiteral("PreprocessOutputDirEdit"), QDir(ProjectPaths::samplesDirectory()).filePath("preprocess"), parametersColumn);
-    m_modelPathEdit = pathEdit(QStringLiteral("PreprocessModelPathEdit"), QDir(ProjectPaths::modelsDirectory()).filePath("model_weights.pth"), parametersColumn);
-
-    auto *pathGroup = panelFrame(QStringLiteral("PreprocessPathParametersPanel"), parametersColumn);
-    pathGroup->setObjectName(QStringLiteral("PreprocessPathParametersPanel"));
-    pathGroup->setMinimumHeight(156);
-    auto *pathLayout = new QGridLayout(pathGroup);
-    pathLayout->setContentsMargins(14, 14, 14, 14);
-    pathLayout->setHorizontalSpacing(14);
-    pathLayout->setVerticalSpacing(12);
-    auto *pathTitle = new QLabel(QStringLiteral("输出与模型"), pathGroup);
-    pathTitle->setProperty("muted", true);
-    pathLayout->addWidget(pathTitle, 0, 0, 1, 2);
-    pathLayout->addWidget(fieldBlock(QStringLiteral("样本输出目录"), m_outputDirEdit, pathGroup), 1, 0, 1, 2);
-    pathLayout->addWidget(fieldBlock(QStringLiteral("模型权重路径"), m_modelPathEdit, pathGroup), 2, 0, 1, 2);
-    pathLayout->setColumnStretch(0, 1);
-    pathLayout->setColumnStretch(1, 1);
-    parametersLayout->addWidget(pathGroup);
-
-    m_sliceLengthEdit = parameterEdit(QStringLiteral("PreprocessSliceLengthEdit"), QStringLiteral("4096"), parametersColumn);
-    m_energyThresholdEdit = parameterEdit(QStringLiteral("PreprocessEnergyThresholdEdit"), QStringLiteral("1.0"), parametersColumn);
-    m_aiConfidenceEdit = parameterEdit(QStringLiteral("PreprocessAiConfidenceEdit"), QStringLiteral("0.85"), parametersColumn);
-
-    auto *basicGroup = panelFrame(QStringLiteral("PreprocessBasicParametersPanel"), parametersColumn);
-    basicGroup->setObjectName(QStringLiteral("PreprocessBasicParametersPanel"));
-    basicGroup->setMinimumHeight(156);
-    auto *basicGrid = new QGridLayout(basicGroup);
-    basicGrid->setContentsMargins(14, 14, 14, 14);
-    basicGrid->setHorizontalSpacing(14);
-    basicGrid->setVerticalSpacing(12);
-    auto *basicTitle = new QLabel(QStringLiteral("基础参数"), basicGroup);
-    basicTitle->setProperty("muted", true);
-    basicGrid->addWidget(basicTitle, 0, 0, 1, 3);
-    basicGrid->addWidget(fieldBlock(QStringLiteral("切片长度"), m_sliceLengthEdit, basicGroup), 1, 0);
-    basicGrid->addWidget(fieldBlock(QStringLiteral("能量阈值 dB"), m_energyThresholdEdit, basicGroup), 1, 1);
-    basicGrid->addWidget(fieldBlock(QStringLiteral("AI 置信阈值"), m_aiConfidenceEdit, basicGroup), 1, 2);
-    basicGrid->setColumnStretch(0, 1);
-    basicGrid->setColumnStretch(1, 1);
-    basicGrid->setColumnStretch(2, 1);
-    parametersLayout->addWidget(basicGroup);
-
-    m_advancedParamsToggle = new QPushButton(QStringLiteral("显示高级参数"), parametersColumn);
+    m_advancedParamsToggle = new QPushButton(QStringLiteral("展开专家设置"), parameterSection);
     m_advancedParamsToggle->setObjectName(QStringLiteral("PreprocessAdvancedParametersToggle"));
     m_advancedParamsToggle->setCheckable(true);
     m_advancedParamsToggle->setProperty("secondary", true);
-    parametersLayout->addWidget(m_advancedParamsToggle, 0, Qt::AlignLeft);
+    parameterLayout->addWidget(m_advancedParamsToggle, 0, Qt::AlignLeft);
 
-    m_noiseFloorEdit = parameterEdit(QStringLiteral("PreprocessNoiseFloorEdit"), QStringLiteral("-90.0"), parametersColumn);
-    m_minBandwidthEdit = parameterEdit(QStringLiteral("PreprocessMinBandwidthEdit"), QStringLiteral("6.0"), parametersColumn);
-    m_minDurationEdit = parameterEdit(QStringLiteral("PreprocessMinDurationEdit"), QStringLiteral("0.05"), parametersColumn);
+    m_windowSamplesEdit = edit(QStringLiteral("PreprocessWindowSamplesEdit"), QStringLiteral("4096"), parameterSection);
+    m_chunkSamplesEdit = edit(QStringLiteral("PreprocessChunkSamplesEdit"), QStringLiteral("2000000"), parameterSection);
+    m_frequencySpanEdit = edit(QStringLiteral("PreprocessFrequencySpanEdit"), QStringLiteral("12.0"), parameterSection);
+    m_energyOffsetEdit = edit(QStringLiteral("PreprocessEnergyOffsetEdit"), QStringLiteral("8.0"), parameterSection);
+    m_targetBandwidthEdit = edit(QStringLiteral("PreprocessTargetBandwidthEdit"), QStringLiteral("20.0"), parameterSection);
+    m_minBandwidthEdit = edit(QStringLiteral("PreprocessMinBandwidthEdit"), QStringLiteral("16.0"), parameterSection);
+    m_minWidebandFillEdit = edit(QStringLiteral("PreprocessMinWidebandFillEdit"), QStringLiteral("0.42"), parameterSection);
+    m_minWidebandSnrEdit = edit(QStringLiteral("PreprocessMinWidebandSnrEdit"), QStringLiteral("3.0"), parameterSection);
+    m_morphFrequencyCloseEdit = edit(QStringLiteral("PreprocessMorphFrequencyCloseEdit"), QStringLiteral("1.2"), parameterSection);
+    m_shapeSplitQuantileEdit = edit(QStringLiteral("PreprocessShapeSplitQuantileEdit"), QStringLiteral("55.0"), parameterSection);
+    m_shapeSplitMergeGapEdit = edit(QStringLiteral("PreprocessShapeSplitMergeGapEdit"), QStringLiteral("0.05"), parameterSection);
+    m_maxSegmentDurationEdit = edit(QStringLiteral("PreprocessMaxSegmentDurationEdit"), QStringLiteral("2.0"), parameterSection);
+    m_bandWindowEdit = edit(QStringLiteral("PreprocessBandWindowEdit"), QStringLiteral("2.0"), parameterSection);
+    m_bandWindowOverlapEdit = edit(QStringLiteral("PreprocessBandWindowOverlapEdit"), QStringLiteral("0.0"), parameterSection);
+    m_minBandScoreEdit = edit(QStringLiteral("PreprocessMinBandScoreEdit"), QStringLiteral("0.02"), parameterSection);
+    m_cvColumnQuantileEdit = edit(QStringLiteral("PreprocessCvColumnQuantileEdit"), QStringLiteral("40.0"), parameterSection);
+    m_cvOccupancyEdit = edit(QStringLiteral("PreprocessCvOccupancyEdit"), QStringLiteral("0.25"), parameterSection);
+    m_cvMorphFrequencyEdit = edit(QStringLiteral("PreprocessCvMorphFrequencyEdit"), QStringLiteral("0.3"), parameterSection);
+    m_cvMorphTimeEdit = edit(QStringLiteral("PreprocessCvMorphTimeEdit"), QStringLiteral("0.05"), parameterSection);
+    m_minDurationEdit = edit(QStringLiteral("PreprocessMinDurationEdit"), QStringLiteral("0.05"), parameterSection);
+    m_mergeGapEdit = edit(QStringLiteral("PreprocessMergeGapEdit"), QStringLiteral("0.20"), parameterSection);
+    m_npersegEdit = edit(QStringLiteral("PreprocessNpersegEdit"), QStringLiteral("2048"), parameterSection);
+    m_noverlapEdit = edit(QStringLiteral("PreprocessNoverlapEdit"), QStringLiteral("1536"), parameterSection);
+    m_spectrogramNpersegEdit = edit(QStringLiteral("PreprocessSpectrogramNpersegEdit"), QStringLiteral("512"), parameterSection);
+    m_spectrogramNoverlapEdit = edit(QStringLiteral("PreprocessSpectrogramNoverlapEdit"), QStringLiteral("384"), parameterSection);
 
-    m_advancedParamsPanel = panelFrame(QStringLiteral("PreprocessAdvancedParametersPanel"), parametersColumn);
+    m_advancedParamsPanel = new QFrame(parameterSection);
     m_advancedParamsPanel->setObjectName(QStringLiteral("PreprocessAdvancedParametersPanel"));
     auto *advancedGrid = new QGridLayout(m_advancedParamsPanel);
-    advancedGrid->setContentsMargins(14, 14, 14, 14);
-    advancedGrid->setHorizontalSpacing(14);
-    advancedGrid->setVerticalSpacing(12);
-    auto *advancedTitle = new QLabel(QStringLiteral("高级参数"), m_advancedParamsPanel);
-    advancedTitle->setProperty("muted", true);
-    advancedGrid->addWidget(advancedTitle, 0, 0, 1, 3);
-    advancedGrid->addWidget(fieldBlock(QStringLiteral("噪声底 dBm"), m_noiseFloorEdit, m_advancedParamsPanel), 1, 0);
-    advancedGrid->addWidget(fieldBlock(QStringLiteral("最小带宽 MHz"), m_minBandwidthEdit, m_advancedParamsPanel), 1, 1);
-    advancedGrid->addWidget(fieldBlock(QStringLiteral("最小时长 ms"), m_minDurationEdit, m_advancedParamsPanel), 1, 2);
-    advancedGrid->setColumnStretch(0, 1);
-    advancedGrid->setColumnStretch(1, 1);
-    advancedGrid->setColumnStretch(2, 1);
+    advancedGrid->setContentsMargins(12, 12, 12, 12);
+    advancedGrid->setHorizontalSpacing(12);
+    advancedGrid->setVerticalSpacing(8);
+    const QVector<QPair<QString, QLineEdit *>> advancedFields = {
+        {QStringLiteral("窗口采样点"), m_windowSamplesEdit}, {QStringLiteral("分块采样点"), m_chunkSamplesEdit},
+        {QStringLiteral("频率跨度 MHz"), m_frequencySpanEdit}, {QStringLiteral("能量偏移 dB"), m_energyOffsetEdit},
+        {QStringLiteral("目标带宽 MHz"), m_targetBandwidthEdit}, {QStringLiteral("最小带宽 MHz"), m_minBandwidthEdit},
+        {QStringLiteral("最小宽带填充"), m_minWidebandFillEdit}, {QStringLiteral("最小宽带 SNR dB"), m_minWidebandSnrEdit},
+        {QStringLiteral("频向闭运算 MHz"), m_morphFrequencyCloseEdit}, {QStringLiteral("形状分割分位数"), m_shapeSplitQuantileEdit},
+        {QStringLiteral("形状合并间隔 ms"), m_shapeSplitMergeGapEdit}, {QStringLiteral("最大片段时长 ms"), m_maxSegmentDurationEdit},
+        {QStringLiteral("频带窗口 ms"), m_bandWindowEdit}, {QStringLiteral("窗口重叠 ms"), m_bandWindowOverlapEdit},
+        {QStringLiteral("最小频带评分"), m_minBandScoreEdit}, {QStringLiteral("CV 列分位数"), m_cvColumnQuantileEdit},
+        {QStringLiteral("CV 最小占空"), m_cvOccupancyEdit}, {QStringLiteral("CV 频向形态 MHz"), m_cvMorphFrequencyEdit},
+        {QStringLiteral("CV 时向形态 ms"), m_cvMorphTimeEdit}, {QStringLiteral("最小时长 ms"), m_minDurationEdit},
+        {QStringLiteral("片段合并间隔 ms"), m_mergeGapEdit}, {QStringLiteral("STFT nperseg"), m_npersegEdit},
+        {QStringLiteral("STFT noverlap"), m_noverlapEdit}, {QStringLiteral("PNG nperseg"), m_spectrogramNpersegEdit},
+        {QStringLiteral("PNG noverlap"), m_spectrogramNoverlapEdit},
+    };
+    for (int index = 0; index < advancedFields.size(); ++index) {
+        advancedGrid->addWidget(field(advancedFields.at(index).first, advancedFields.at(index).second, m_advancedParamsPanel),
+                                 index / 4,
+                                 index % 4);
+    }
     m_advancedParamsPanel->setVisible(false);
-    parametersLayout->addWidget(m_advancedParamsPanel);
-    parametersLayout->addStretch();
-    workbench->addWidget(parametersColumn, 4);
+    parameterLayout->addWidget(m_advancedParamsPanel);
 
-    QVBoxLayout *runLayout = nullptr;
-    auto *runColumn = workbenchColumn(QStringLiteral("PreprocessRunColumn"), QStringLiteral("运行"), this, &runLayout);
+    auto *profileRow = new QHBoxLayout();
+    m_resetProfileButton = new QPushButton(QStringLiteral("恢复默认"), parameterSection);
+    m_resetProfileButton->setObjectName(QStringLiteral("PreprocessResetProfileButton"));
+    m_saveProfileButton = new QPushButton(QStringLiteral("保存方案"), parameterSection);
+    m_saveProfileButton->setObjectName(QStringLiteral("PreprocessSaveProfileButton"));
+    m_loadProfileButton = new QPushButton(QStringLiteral("加载方案"), parameterSection);
+    m_loadProfileButton->setObjectName(QStringLiteral("PreprocessLoadProfileButton"));
+    m_resetProfileButton->setProperty("secondary", true);
+    m_saveProfileButton->setProperty("secondary", true);
+    m_loadProfileButton->setProperty("secondary", true);
+    profileRow->addWidget(m_resetProfileButton);
+    profileRow->addWidget(m_saveProfileButton);
+    profileRow->addWidget(m_loadProfileButton);
+    profileRow->addStretch(1);
+    parameterLayout->addLayout(profileRow);
 
-    m_segmentMetric = new MetricCard(QStringLiteral("候选片段"), runColumn);
+    auto *runLayout = static_cast<QVBoxLayout *>(nullptr);
+    auto *runSection = sectionFrame(QStringLiteral("PreprocessRunColumn"), QStringLiteral("3. 运行任务"), this, &runLayout);
+    auto *metrics = new QHBoxLayout();
+    m_capMetric = new MetricCard(QStringLiteral("输入状态"), runSection);
+    m_capMetric->setValue(QStringLiteral("未确认"));
+    m_segmentMetric = new MetricCard(QStringLiteral("候选片段"), runSection);
     m_segmentMetric->setValue(QStringLiteral("0"));
-    m_sampleMetric = new MetricCard(QStringLiteral("输出样本"), runColumn);
+    m_sampleMetric = new MetricCard(QStringLiteral("输出样本"), runSection);
     m_sampleMetric->setValue(QStringLiteral("0"));
-    runLayout->addWidget(m_segmentMetric);
-    runLayout->addWidget(m_sampleMetric);
+    metrics->addWidget(m_capMetric);
+    metrics->addWidget(m_segmentMetric);
+    metrics->addWidget(m_sampleMetric);
+    runLayout->addLayout(metrics);
 
-    m_runStateLabel = new QLabel(QStringLiteral("待执行"), runColumn);
+    m_runStateLabel = new QLabel(QStringLiteral("待执行"), runSection);
     m_runStateLabel->setObjectName(QStringLiteral("PreprocessRunStateLabel"));
-    m_runStateLabel->setProperty("state", QStringLiteral("idle"));
     runLayout->addWidget(m_runStateLabel);
+    m_progressBar = new QProgressBar(runSection);
+    m_progressBar->setObjectName(QStringLiteral("PreprocessProgressBar"));
+    m_progressBar->setRange(0, 100);
+    m_progressBar->setValue(0);
+    runLayout->addWidget(m_progressBar);
+    m_progressDetailLabel = new QLabel(QStringLiteral("等待开始"), runSection);
+    m_progressDetailLabel->setObjectName(QStringLiteral("PreprocessProgressDetail"));
+    m_progressDetailLabel->setWordWrap(true);
+    m_progressDetailLabel->setProperty("muted", true);
+    runLayout->addWidget(m_progressDetailLabel);
 
-    m_outputSummaryLabel = new QLabel(QStringLiteral("输出目录：%1").arg(QDir::toNativeSeparators(m_outputDirEdit->text())), runColumn);
+    m_outputSummaryLabel = new QLabel(QStringLiteral("任务结果将写入独立批次目录。"), runSection);
     m_outputSummaryLabel->setObjectName(QStringLiteral("PreprocessOutputSummaryLabel"));
     m_outputSummaryLabel->setWordWrap(true);
-    m_outputSummaryLabel->setProperty("muted", true);
     runLayout->addWidget(m_outputSummaryLabel);
-
-    m_runButton = new QPushButton(QStringLiteral("开始预处理"), runColumn);
+    m_computeBackendLabel = new QLabel(QStringLiteral("计算后端：CUDA GPU（任务启动后确认）"), runSection);
+    m_computeBackendLabel->setObjectName(QStringLiteral("PreprocessComputeBackendLabel"));
+    m_computeBackendLabel->setWordWrap(true);
+    m_computeBackendLabel->setProperty("muted", true);
+    runLayout->addWidget(m_computeBackendLabel);
+    auto *runButtons = new QHBoxLayout();
+    m_runButton = new QPushButton(QStringLiteral("开始预处理"), runSection);
     m_runButton->setObjectName(QStringLiteral("StartPreprocessButton"));
     m_runButton->setProperty("primary", true);
     m_runButton->setMinimumHeight(42);
-    m_demoButton = new QPushButton(QStringLiteral("演示生成样本"), runColumn);
-    m_demoButton->setObjectName(QStringLiteral("DemoPreprocessButton"));
-    m_demoButton->setProperty("secondary", true);
-    runLayout->addWidget(m_runButton);
-    runLayout->addWidget(m_demoButton);
+    m_runButton->setEnabled(false);
+    m_cancelButton = new QPushButton(QStringLiteral("取消并保留结果"), runSection);
+    m_cancelButton->setObjectName(QStringLiteral("CancelPreprocessButton"));
+    m_cancelButton->setProperty("secondary", true);
+    m_cancelButton->setEnabled(false);
+    m_nextDatasetButton = new QPushButton(QStringLiteral("去数据集复核"), runSection);
+    m_nextDatasetButton->setObjectName(QStringLiteral("GoToDatasetButton"));
+    m_nextDatasetButton->setProperty("secondary", true);
+    m_nextDatasetButton->setEnabled(false);
+    runButtons->addWidget(m_runButton);
+    runButtons->addWidget(m_cancelButton);
+    runButtons->addWidget(m_nextDatasetButton);
+    runButtons->addStretch(1);
+    runLayout->addLayout(runButtons);
 
-    m_logOutput = new QPlainTextEdit(runColumn);
+    auto *detailsToggle = new QPushButton(QStringLiteral("显示运行详情"), runSection);
+    detailsToggle->setObjectName(QStringLiteral("PreprocessLogToggle"));
+    detailsToggle->setCheckable(true);
+    detailsToggle->setProperty("secondary", true);
+    runLayout->addWidget(detailsToggle, 0, Qt::AlignLeft);
+    m_logOutput = new QPlainTextEdit(runSection);
     m_logOutput->setObjectName(QStringLiteral("PreprocessLog"));
     m_logOutput->setReadOnly(true);
-    m_logOutput->setMinimumHeight(260);
-    m_logOutput->setPlainText(QStringLiteral("等待 CAP 预览或预处理任务。"));
-    runLayout->addWidget(m_logOutput, 1);
-    workbench->addWidget(runColumn, 3);
+    m_logOutput->setMinimumHeight(120);
+    m_logOutput->setVisible(false);
+    runLayout->addWidget(m_logOutput);
 
-    contentLayout()->addLayout(workbench, 6);
+    auto *resultsPanel = new QGroupBox(QStringLiteral("4. 结果与复核"), this);
+    resultsPanel->setObjectName(QStringLiteral("PreprocessResultsPanel"));
+    auto *resultsLayout = new QVBoxLayout(resultsPanel);
+    resultsLayout->setContentsMargins(16, 16, 16, 16);
+    auto *overview = new QHBoxLayout();
+    auto *avgBandwidth = new MetricCard(QStringLiteral("平均带宽"), resultsPanel);
+    avgBandwidth->setObjectName(QStringLiteral("PreprocessAverageBandwidthMetric"));
+    auto *avgSnr = new MetricCard(QStringLiteral("平均 SNR"), resultsPanel);
+    avgSnr->setObjectName(QStringLiteral("PreprocessAverageSnrMetric"));
+    m_qualitySummaryLabel = new QLabel(QStringLiteral("暂无结果。"), resultsPanel);
+    m_qualitySummaryLabel->setObjectName(QStringLiteral("PreprocessQualitySummary"));
+    m_qualitySummaryLabel->setWordWrap(true);
+    overview->addWidget(avgBandwidth);
+    overview->addWidget(avgSnr);
+    overview->addWidget(m_qualitySummaryLabel, 2);
+    resultsLayout->addLayout(overview);
 
-    auto *resultsGroup = new QGroupBox(QStringLiteral("结果"), this);
-    resultsGroup->setObjectName(QStringLiteral("PreprocessResultsPanel"));
-    resultsGroup->setMaximumHeight(220);
-    auto *resultsLayout = new QVBoxLayout(resultsGroup);
-    resultsLayout->setContentsMargins(16, 20, 16, 16);
-    resultsLayout->setSpacing(10);
-
-    m_emptyState = new QLabel(QStringLiteral("暂无预处理结果。读取 CAP 后可启动预处理任务。"), resultsGroup);
+    m_emptyState = new QLabel(QStringLiteral("完成预处理后，这里会显示候选片段和输出样本。"), resultsPanel);
     m_emptyState->setObjectName(QStringLiteral("EmptyState"));
+    m_emptyState->setWordWrap(true);
     resultsLayout->addWidget(m_emptyState);
 
-    m_resultsTabs = new QTabWidget(resultsGroup);
+    m_resultsTabs = new QTabWidget(resultsPanel);
     m_resultsTabs->setObjectName(QStringLiteral("PreprocessResultsTabs"));
-
-    m_segmentTable = new QTableWidget(0, 6, m_resultsTabs);
+    m_segmentTable = new QTableWidget(0, 8, m_resultsTabs);
     m_segmentTable->setObjectName(QStringLiteral("PreprocessSegmentTable"));
+    m_segmentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_segmentTable->setAlternatingRowColors(true);
-    m_segmentTable->setHorizontalHeaderLabels({
-        QStringLiteral("片段"),
-        QStringLiteral("起始点"),
-        QStringLiteral("结束点"),
-        QStringLiteral("时长 ms"),
-        QStringLiteral("置信度"),
-        QStringLiteral("状态"),
-    });
-    m_segmentTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_segmentTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_segmentTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_segmentTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_segmentTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_segmentTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    m_segmentTable->setHorizontalHeaderLabels({QStringLiteral("候选片段"), QStringLiteral("起始点"), QStringLiteral("结束点"),
+                                                QStringLiteral("时长 ms"), QStringLiteral("带宽"), QStringLiteral("SNR dB"),
+                                                QStringLiteral("评分"), QStringLiteral("质量")});
+    m_segmentTable->horizontalHeader()->setStretchLastSection(true);
     m_segmentTable->verticalHeader()->setVisible(false);
     m_resultsTabs->addTab(m_segmentTable, QStringLiteral("候选片段"));
 
-    m_sampleTable = new QTableWidget(0, 5, m_resultsTabs);
+    m_sampleTable = new QTableWidget(0, 7, m_resultsTabs);
     m_sampleTable->setObjectName(QStringLiteral("PreprocessSampleTable"));
+    m_sampleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_sampleTable->setAlternatingRowColors(true);
-    m_sampleTable->setHorizontalHeaderLabels({
-        QStringLiteral("样本"),
-        QStringLiteral("标签"),
-        QStringLiteral("中心频率"),
-        QStringLiteral("文件"),
-        QStringLiteral("状态"),
-    });
+    m_sampleTable->setHorizontalHeaderLabels({QStringLiteral("样本 ID"), QStringLiteral("候选片段"), QStringLiteral("中心频率"),
+                                               QStringLiteral("带宽"), QStringLiteral("评分"), QStringLiteral("候选局部图"),
+                                               QStringLiteral("复核状态")});
     m_sampleTable->horizontalHeader()->setStretchLastSection(true);
     m_sampleTable->verticalHeader()->setVisible(false);
     m_resultsTabs->addTab(m_sampleTable, QStringLiteral("输出样本"));
     resultsLayout->addWidget(m_resultsTabs, 1);
-    contentLayout()->addWidget(resultsGroup, 1);
 
+    auto *detailPanel = new QFrame(resultsPanel);
+    detailPanel->setObjectName(QStringLiteral("PreprocessResultDetailPanel"));
+    auto *detailLayout = new QHBoxLayout(detailPanel);
+    detailLayout->setContentsMargins(10, 10, 10, 10);
+    auto *detailText = new QVBoxLayout();
+    m_detailTitleLabel = new QLabel(QStringLiteral("选择一条结果查看详情"), detailPanel);
+    m_detailTitleLabel->setObjectName(QStringLiteral("PreprocessDetailTitle"));
+    m_detailMetricsLabel = new QLabel(QStringLiteral("-"), detailPanel);
+    m_detailMetricsLabel->setObjectName(QStringLiteral("PreprocessDetailMetrics"));
+    m_detailMetricsLabel->setWordWrap(true);
+    m_detailPathsLabel = new QLabel(QStringLiteral("-"), detailPanel);
+    m_detailPathsLabel->setObjectName(QStringLiteral("PreprocessDetailPaths"));
+    m_detailPathsLabel->setWordWrap(true);
+    detailText->addWidget(m_detailTitleLabel);
+    detailText->addWidget(m_detailMetricsLabel);
+    detailText->addWidget(m_detailPathsLabel);
+    detailText->addStretch(1);
+    detailLayout->addLayout(detailText, 2);
+    m_spectrogramPreviewLabel = new QLabel(QStringLiteral("暂无时频图"), detailPanel);
+    m_spectrogramPreviewLabel->setObjectName(QStringLiteral("PreprocessSpectrogramPreview"));
+    m_spectrogramPreviewLabel->setAlignment(Qt::AlignCenter);
+    m_spectrogramPreviewLabel->setMinimumSize(240, 150);
+    detailLayout->addWidget(m_spectrogramPreviewLabel, 1);
+    resultsLayout->addWidget(detailPanel);
+
+    contentLayout()->addWidget(inputSection);
+    contentLayout()->addWidget(parameterSection);
+    contentLayout()->addWidget(runSection);
+    contentLayout()->addWidget(resultsPanel, 1);
+
+    m_processRunner = new PreprocessProcessRunner(this);
     connect(m_previewButton, &QPushButton::clicked, this, &PreprocessPage::previewCap);
-    connect(m_runButton, &QPushButton::clicked, this, &PreprocessPage::runPreprocess);
-    connect(m_demoButton, &QPushButton::clicked, this, &PreprocessPage::runDemoPreprocess);
-    connect(m_outputDirEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
-        if (m_outputSummaryLabel) {
-            m_outputSummaryLabel->setText(QStringLiteral("输出目录：%1").arg(QDir::toNativeSeparators(text)));
-        }
-    });
-    connect(m_advancedParamsToggle, &QPushButton::toggled, this, [this](bool checked) {
-        if (m_advancedParamsPanel) {
-            m_advancedParamsPanel->setVisible(checked);
-        }
-        if (m_advancedParamsToggle) {
-            m_advancedParamsToggle->setText(checked ? QStringLiteral("隐藏高级参数") : QStringLiteral("显示高级参数"));
+    connect(m_capPathEdit, &QLineEdit::textChanged, this, [this]() {
+        m_inputConfirmed = false;
+        if (m_runButton && !isRunning()) {
+            m_runButton->setEnabled(false);
         }
     });
     connect(browseButton, &QPushButton::clicked, this, [this]() {
-        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("选择 CAP 文件"), ProjectPaths::workspaceRoot(), QStringLiteral("CAP 文件 (*.cap)"));
+        const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("选择 IQRAW/CAP 文件"),
+                                                          ProjectPaths::dataDirectory(),
+                                                          QStringLiteral("IQ 数据 (*.iqraw *.cap);;所有文件 (*)"));
         if (!path.isEmpty()) {
             m_capPathEdit->setText(path);
             previewCap();
         }
     });
+    connect(outputButton, &QPushButton::clicked, this, [this]() {
+        const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("选择预处理批次根目录"),
+                                                                 m_outputDirEdit->text());
+        if (!path.isEmpty()) {
+            m_outputDirEdit->setText(path);
+        }
+    });
+    connect(m_runButton, &QPushButton::clicked, this, &PreprocessPage::runPreprocess);
+    connect(m_cancelButton, &QPushButton::clicked, this, &PreprocessPage::cancelPreprocess);
+    connect(m_nextDatasetButton, &QPushButton::clicked, this, &PreprocessPage::requestOpenDataset);
+    connect(m_advancedParamsToggle, &QPushButton::toggled, this, [this](bool checked) {
+        m_advancedParamsPanel->setVisible(checked);
+        m_advancedParamsToggle->setText(checked ? QStringLiteral("收起专家设置") : QStringLiteral("展开专家设置"));
+    });
+    connect(detailsToggle, &QPushButton::toggled, this, [this, detailsToggle](bool checked) {
+        m_logOutput->setVisible(checked);
+        detailsToggle->setText(checked ? QStringLiteral("隐藏运行详情") : QStringLiteral("显示运行详情"));
+    });
+    connect(m_resetProfileButton, &QPushButton::clicked, this, &PreprocessPage::resetProfile);
+    connect(m_saveProfileButton, &QPushButton::clicked, this, &PreprocessPage::saveProfile);
+    connect(m_loadProfileButton, &QPushButton::clicked, this, &PreprocessPage::loadProfile);
+    connect(m_segmentTable, &QTableWidget::itemSelectionChanged, this, &PreprocessPage::selectResultRow);
+    connect(m_sampleTable, &QTableWidget::itemSelectionChanged, this, &PreprocessPage::selectResultRow);
+    connect(m_processRunner, &PreprocessProcessRunner::progressChanged, this, &PreprocessPage::updateProgress);
+    connect(m_processRunner, &PreprocessProcessRunner::partialResultAvailable, this, &PreprocessPage::showPartialResult);
+    connect(m_processRunner, &PreprocessProcessRunner::finished, this, [this](const PreprocessRunResult &result) {
+        setBusy(false);
+        showRunResult(result);
+        if (!result.sampleRecords.isEmpty()) {
+            saveSampleRecords(result.sampleRecords);
+        }
+        savePreprocessBatch(result);
+        if (result.success || result.partial || result.cancelled || result.timedOut) {
+            m_nextDatasetButton->setEnabled(!result.sampleRecords.isEmpty());
+        }
+    });
+    connect(m_processRunner, &PreprocessProcessRunner::failed, this, [this](const QString &message) {
+        setBusy(false);
+        setRunState(QStringLiteral("失败"), QStringLiteral("error"));
+        setValidationMessage(message, QStringLiteral("error"));
+        appendLog(QStringLiteral("预处理失败：%1").arg(message));
+    });
+    connect(m_processRunner, &PreprocessProcessRunner::cancelled, this, [this]() {
+        appendLog(QStringLiteral("任务已取消，已生成的文件保留在批次目录。"));
+    });
 }
 
 void PreprocessPage::previewCap()
 {
+    const QString path = m_capPathEdit ? m_capPathEdit->text().trimmed() : QString();
+    if (path.isEmpty() || !QFileInfo::exists(path)) {
+        setValidationMessage(QStringLiteral("请选择存在的 IQRAW 或 CAP 文件。"), QStringLiteral("error"));
+        return;
+    }
     CapProbeService service;
-    const auto result = service.probe(m_capPathEdit->text().trimmed());
+    const auto result = service.probe(path);
     if (!result.has_value()) {
         setValidationMessage(service.lastError(), QStringLiteral("error"));
         if (m_capMetric) {
-            m_capMetric->setValue(QStringLiteral("无效"));
+            m_capMetric->setValue(QStringLiteral("需检查"));
         }
-        m_logOutput->setPlainText(service.lastError());
         return;
     }
-
     updateCapSummary(*result);
-    setValidationMessage(QStringLiteral("CAP 头信息读取完成。"), QStringLiteral("good"));
+    m_inputConfirmed = true;
+    const QFileInfo info(path);
+    m_inputFileSummaryLabel->setText(QStringLiteral("已确认：%1\n格式 %2，文件大小 %3，预览 IQ 点数 %4。")
+                                         .arg(info.fileName(), info.suffix().toUpper(), fileSizeText(info.size()))
+                                         .arg(result->statistics.sampleCount));
+    setValidationMessage(QStringLiteral("输入文件已确认，可以开始预处理。"), QStringLiteral("good"));
     if (m_capMetric) {
-        m_capMetric->setValue(QStringLiteral("已读取"));
+    m_capMetric->setValue(QStringLiteral("已确认"));
+    if (m_runButton && !isRunning()) {
+        m_runButton->setEnabled(true);
     }
-    m_logOutput->setPlainText(QStringLiteral("CAP 预览完成。版本：%1，头长度：0x%2，IQ 预览点数：%3")
-                                  .arg(result->version)
-                                  .arg(result->headerLength, 0, 16)
-                                  .arg(result->previewPairs.size()));
+    }
+    appendLog(QStringLiteral("输入预览完成：%1").arg(path));
 }
 
 void PreprocessPage::runPreprocess()
 {
-    if (m_preprocessThread) {
+    if (!m_processRunner || m_processRunner->isRunning()) {
+        return;
+    }
+    if (!m_inputConfirmed) {
+        setValidationMessage(QStringLiteral("请先读取并确认输入文件。"), QStringLiteral("error"));
+        return;
+    }
+    PreprocessRequest request;
+    QString error;
+    const QString inputPath = m_capPathEdit->text().trimmed();
+    if (!buildRequest(inputPath, &request, &error)) {
+        setValidationMessage(error, QStringLiteral("error"));
+        appendLog(error);
         return;
     }
 
-    const QString capPath = m_capPathEdit->text().trimmed();
-    CapProbeService probeService;
-    const auto capInfo = probeService.probe(capPath);
+    const QString taskId = QStringLiteral("pp_%1").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz")));
+    const QString batchName = QStringLiteral("%1_%2").arg(QFileInfo(inputPath).completeBaseName(), taskId);
+    const QString batchDir = QDir(m_outputDirEdit->text().trimmed()).filePath(batchName);
+    request.taskId = taskId;
+    request.batchId = batchName;
+    request.sampleOutputDir = batchDir;
+    request.progressPath = QDir(batchDir).filePath(QStringLiteral("progress.jsonl"));
+    request.cancelPath = QDir(batchDir).filePath(QStringLiteral("cancel.flag"));
+    m_outputSummaryLabel->setText(QStringLiteral("本次批次：%1").arg(QDir::toNativeSeparators(batchDir)));
+
+    CapProbeService probe;
+    const auto capInfo = probe.probe(inputPath);
     if (!capInfo.has_value()) {
-        setValidationMessage(probeService.lastError(), QStringLiteral("error"));
-        appendLog(probeService.lastError());
+        setValidationMessage(probe.lastError(), QStringLiteral("error"));
         return;
     }
-
-    updateCapSummary(*capInfo);
-    setValidationMessage(QStringLiteral("参数已通过校验，开始预处理。"), QStringLiteral("good"));
-    setRunState(QStringLiteral("预处理中"), QStringLiteral("running"));
     setBusy(true);
-    m_logOutput->setPlainText(QStringLiteral("正在启动 Python 预处理任务..."));
-
-    const PreprocessRequest request = buildRequest(capPath);
-    m_preprocessThread = QThread::create([this, request, capInfo]() {
-        QString error;
-        auto result = PreprocessProcessRunner::run(request, *capInfo, &error);
-        QMetaObject::invokeMethod(this, [this, result, error]() {
-            m_preprocessThread = nullptr;
-            setBusy(false);
-            if (!result.has_value()) {
-                appendLog(QStringLiteral("预处理失败：%1").arg(error));
-                setRunState(QStringLiteral("失败"), QStringLiteral("error"));
-                setValidationMessage(error, QStringLiteral("error"));
-                m_emptyState->setText(QStringLiteral("预处理失败。请检查 CAP 文件、Python 环境和模型权重路径。"));
-                m_emptyState->setVisible(true);
-                return;
-            }
-
-            showRunResult(*result);
-            if (result->success) {
-                saveSampleRecords(result->sampleRecords);
-            } else {
-                setValidationMessage(result->message, QStringLiteral("error"));
-            }
-        }, Qt::QueuedConnection);
-    });
-    connect(m_preprocessThread, &QThread::finished, m_preprocessThread, &QObject::deleteLater);
-    m_preprocessThread->start();
+    setValidationMessage(QStringLiteral("任务已启动，正在读取文件。"), QStringLiteral("good"));
+    setRunState(QStringLiteral("准备中"), QStringLiteral("running"));
+    m_progressBar->setValue(0);
+    m_progressDetailLabel->setText(QStringLiteral("正在启动 Python 预处理进程。"));
+    m_logOutput->clear();
+    appendLog(QStringLiteral("任务：%1").arg(taskId));
+    appendLog(QStringLiteral("输入：%1").arg(inputPath));
+    appendLog(QStringLiteral("输出：%1").arg(batchDir));
+    if (m_computeBackendLabel) {
+        m_computeBackendLabel->setText(QStringLiteral("计算后端：正在检查 CUDA GPU"));
+    }
+    if (!m_processRunner->start(request, *capInfo)) {
+        setBusy(false);
+        setValidationMessage(QStringLiteral("无法启动预处理任务。"), QStringLiteral("error"));
+    }
 }
 
-void PreprocessPage::runDemoPreprocess()
+void PreprocessPage::cancelPreprocess()
 {
-    const QString capPath = m_capPathEdit->text().trimmed();
-    CapProbeService probeService;
-    auto capInfo = probeService.probe(capPath);
-    if (!capInfo.has_value()) {
-        capInfo = CapProbeResult{};
-        capInfo->bandwidthHz = 10000000.0;
-        capInfo->sampleRateHz = 12800000.0;
-        capInfo->centerFrequencyHz = 1090000000.0;
-        capInfo->version = QStringLiteral("DEMO");
-        capInfo->headerLength = 0x200;
-        capInfo->frameSampleCount = 4096;
-        m_logOutput->setPlainText(QStringLiteral("演示模式：CAP 文件不可用，已使用默认 1090 MHz / 12.8 MHz 参数。"));
+    if (m_processRunner) {
+        m_processRunner->cancel();
+        if (m_cancelButton) {
+            m_cancelButton->setEnabled(false);
+        }
+        setRunState(QStringLiteral("正在取消"), QStringLiteral("running"));
     }
+}
 
-    updateCapSummary(*capInfo);
-    setBusy(true);
-    setRunState(QStringLiteral("生成演示样本"), QStringLiteral("running"));
-    const auto result = PreprocessProcessRunner::runDemo(buildRequest(capPath.isEmpty() ? QDir(ProjectPaths::workspaceRoot()).filePath("demo.cap") : capPath), *capInfo);
-    setBusy(false);
+void PreprocessPage::updateProgress(const PreprocessProgress &progress)
+{
+    if (!progress.phase.isEmpty()) {
+        setRunState(progress.phase, QStringLiteral("running"));
+    }
+    if (m_progressBar) {
+        m_progressBar->setValue(progress.percent);
+    }
+    if (m_segmentMetric) {
+        m_segmentMetric->setValue(QString::number(progress.candidateCount));
+    }
+    if (m_sampleMetric) {
+        m_sampleMetric->setValue(QString::number(progress.sampleCount));
+    }
+    const QString bytes = progress.totalBytes > 0
+        ? QStringLiteral("%1 / %2").arg(fileSizeText(progress.bytesRead), fileSizeText(progress.totalBytes))
+        : QStringLiteral("-");
+    const QString eta = progress.etaMs > 0
+        ? QStringLiteral("，预计剩余 %1 秒").arg(progress.etaMs / 1000)
+        : QString();
+    m_progressDetailLabel->setText(QStringLiteral("%1\n已读取 %2，分块 %3，候选 %4，样本 %5%6")
+                                       .arg(progress.message, bytes)
+                                       .arg(progress.chunksProcessed)
+                                       .arg(progress.candidateCount)
+                                       .arg(progress.sampleCount)
+                                       .arg(eta));
+}
 
+void PreprocessPage::showPartialResult(const PreprocessRunResult &result)
+{
     showRunResult(result);
-    saveSampleRecords(result.sampleRecords);
-    setValidationMessage(QStringLiteral("演示样本已生成。"), QStringLiteral("good"));
+    if (m_processRunner && m_processRunner->isRunning()) {
+        setRunState(QStringLiteral("处理中，已生成部分结果"), QStringLiteral("running"));
+        m_qualitySummaryLabel->setText(QStringLiteral("已生成部分结果，任务仍在继续；当前结果可以先行复核。"));
+    }
 }
 
 void PreprocessPage::showRunResult(const PreprocessRunResult &result)
 {
+    m_latestResult = result;
     m_segmentTable->setRowCount(0);
     for (const PreprocessSegment &segment : result.segments) {
         const int row = m_segmentTable->rowCount();
@@ -506,42 +760,235 @@ void PreprocessPage::showRunResult(const PreprocessRunResult &result)
         m_segmentTable->setItem(row, 1, readonlyItem(QString::number(segment.startSample)));
         m_segmentTable->setItem(row, 2, readonlyItem(QString::number(segment.endSample)));
         m_segmentTable->setItem(row, 3, readonlyItem(QString::number(segment.durationMs, 'f', 3)));
-        m_segmentTable->setItem(row, 4, readonlyItem(QString::number(segment.score, 'f', 3)));
-        m_segmentTable->setItem(row, 5, readonlyItem(segment.status));
+        m_segmentTable->setItem(row, 4, readonlyItem(mhz(segment.bandwidthHz)));
+        m_segmentTable->setItem(row, 5, readonlyItem(QString::number(segment.snrDb, 'f', 2)));
+        m_segmentTable->setItem(row, 6, readonlyItem(QString::number(segment.score, 'f', 3)));
+        m_segmentTable->setItem(row, 7, readonlyItem(segment.status == QStringLiteral("valid") ? QStringLiteral("可复核") : QStringLiteral("需检查")));
     }
-
     m_sampleTable->setRowCount(0);
     for (const SampleRecord &record : result.sampleRecords) {
         const int row = m_sampleTable->rowCount();
         m_sampleTable->insertRow(row);
-        m_sampleTable->setItem(row, 0, readonlyItem(record.sampleId));
-        const QString label = record.labelIndividual.isEmpty() ? record.labelType : QStringLiteral("%1 / %2").arg(record.labelType, record.labelIndividual);
-        m_sampleTable->setItem(row, 1, readonlyItem(label));
-        m_sampleTable->setItem(row, 2, readonlyItem(QStringLiteral("%1 MHz").arg(record.centerFrequencyHz / 1000000.0, 0, 'f', 3)));
-        m_sampleTable->setItem(row, 3, readonlyItem(QFileInfo(record.sampleFilePath).fileName()));
-        m_sampleTable->setItem(row, 4, readonlyItem(record.status));
+        m_sampleTable->setItem(row, 0, readonlyItem(record.sampleId, record.sampleFilePath));
+        m_sampleTable->setItem(row, 1, readonlyItem(record.candidateId));
+        m_sampleTable->setItem(row, 2, readonlyItem(mhz(record.centerFrequencyHz)));
+        m_sampleTable->setItem(row, 3, readonlyItem(mhz(record.bandwidthHz)));
+        m_sampleTable->setItem(row, 4, readonlyItem(QString::number(record.score, 'f', 3)));
+        const QString previewPath = record.candidatePreviewFilePath.isEmpty()
+            ? record.spectrogramFilePath
+            : record.candidatePreviewFilePath;
+        m_sampleTable->setItem(row, 5, readonlyItem(previewPath.isEmpty() ? QStringLiteral("未生成") : QStringLiteral("已生成"),
+                                                     previewPath));
+        m_sampleTable->setItem(row, 6, readonlyItem(record.qualityStatus.isEmpty() ? QStringLiteral("待复核") : record.qualityStatus));
     }
+    const bool hasResult = !result.segments.isEmpty() || !result.sampleRecords.isEmpty();
+    m_emptyState->setVisible(!hasResult);
+    m_emptyState->setText(hasResult ? QString() : QStringLiteral("任务完成，但没有检测到可用候选片段。请检查字节序、采样数据和处理方案。"));
+    m_segmentMetric->setValue(QString::number(result.candidateSegmentCount > 0 ? result.candidateSegmentCount : result.segments.size()));
+    m_sampleMetric->setValue(QString::number(result.sampleRecords.size()));
+    if (result.averageBandwidthHz > 0.0) {
+        if (auto *metric = findChild<MetricCard *>(QStringLiteral("PreprocessAverageBandwidthMetric"))) {
+            metric->setValue(mhz(result.averageBandwidthHz));
+        }
+    }
+    if (auto *metric = findChild<MetricCard *>(QStringLiteral("PreprocessAverageSnrMetric"))) {
+        metric->setValue(result.averageSnrDb > 0.0 ? QStringLiteral("%1 dB").arg(result.averageSnrDb, 0, 'f', 2) : QStringLiteral("-"));
+    }
+    m_qualitySummaryLabel->setText(result.qualitySummary.isEmpty()
+                                       ? (result.partial ? QStringLiteral("部分结果，建议复核后再训练。") : QStringLiteral("结果已生成，可进入数据集页。"))
+                                       : result.qualitySummary);
+    m_resultsTabs->setCurrentWidget(result.sampleRecords.isEmpty() ? m_segmentTable : m_sampleTable);
+    if (result.cancelled) {
+        setRunState(QStringLiteral("已取消，部分结果已保留"), QStringLiteral("done"));
+    } else if (result.timedOut) {
+        setRunState(QStringLiteral("已超时，部分结果已保留"), QStringLiteral("error"));
+    } else if (result.success) {
+        setRunState(result.partial ? QStringLiteral("完成但有提示") : QStringLiteral("已完成"),
+                    result.partial ? QStringLiteral("running") : QStringLiteral("done"));
+    } else {
+        setRunState(QStringLiteral("失败"), QStringLiteral("error"));
+    }
+    if (!result.message.isEmpty()) {
+        appendLog(result.message);
+    }
+    if (m_computeBackendLabel) {
+        if (result.computeBackend == QStringLiteral("cuda")) {
+            const QString device = result.gpuDeviceName.isEmpty()
+                ? QStringLiteral("CUDA GPU")
+                : QStringLiteral("CUDA GPU：%1").arg(result.gpuDeviceName);
+            m_computeBackendLabel->setText(QStringLiteral("计算后端：%1").arg(device));
+        } else if (result.gpuFallback) {
+            m_computeBackendLabel->setText(QStringLiteral("计算后端：CPU（CUDA 不可用，已回退）"));
+        } else {
+            m_computeBackendLabel->setText(QStringLiteral("计算后端：CPU"));
+        }
+    }
+    if (!result.logs.isEmpty()) {
+        for (const QString &line : result.logs) {
+            appendLog(line);
+        }
+    }
+}
 
-    const bool hasRows = m_segmentTable->rowCount() > 0 || m_sampleTable->rowCount() > 0;
-    m_emptyState->setVisible(!hasRows);
-    m_emptyState->setText(hasRows ? QString() : QStringLiteral("预处理完成，但没有检测到可用片段。"));
+void PreprocessPage::selectResultRow()
+{
+    if (m_resultsTabs && m_resultsTabs->currentWidget() == m_sampleTable) {
+        const int row = m_sampleTable->currentRow();
+        if (row >= 0 && row < m_latestResult.sampleRecords.size()) {
+            const SampleRecord &record = m_latestResult.sampleRecords.at(row);
+            m_detailTitleLabel->setText(record.sampleId);
+            m_detailMetricsLabel->setText(QStringLiteral("候选：%1\n中心频率：%2\n带宽：%3\nSNR：%4 dB\n评分：%5")
+                                              .arg(record.candidateId, mhz(record.centerFrequencyHz), mhz(record.bandwidthHz))
+                                              .arg(record.snrDb, 0, 'f', 2).arg(record.score, 0, 'f', 3));
+            const QString previewPath = record.candidatePreviewFilePath.isEmpty()
+                ? record.spectrogramFilePath
+                : record.candidatePreviewFilePath;
+            m_detailPathsLabel->setText(QStringLiteral("原始文件：%1\nNPZ：%2\n候选局部图：%3\n样本时频图：%4")
+                                            .arg(QDir::toNativeSeparators(record.rawFilePath),
+                                                 QDir::toNativeSeparators(record.sampleFilePath),
+                                                 record.candidatePreviewFilePath.isEmpty()
+                                                     ? QStringLiteral("未生成")
+                                                     : QDir::toNativeSeparators(record.candidatePreviewFilePath),
+                                                 record.spectrogramFilePath.isEmpty()
+                                                     ? QStringLiteral("未生成")
+                                                     : QDir::toNativeSeparators(record.spectrogramFilePath)));
+            if (!previewPath.isEmpty() && QFileInfo::exists(previewPath)) {
+                QPixmap pixmap(previewPath);
+                m_spectrogramPreviewLabel->setPixmap(pixmap.scaled(m_spectrogramPreviewLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            } else {
+                m_spectrogramPreviewLabel->setText(QStringLiteral("未生成候选局部图"));
+                m_spectrogramPreviewLabel->setPixmap(QPixmap());
+            }
+            return;
+        }
+    }
+    const int row = m_segmentTable->currentRow();
+    if (row >= 0 && row < m_latestResult.segments.size()) {
+        const auto &segment = m_latestResult.segments.at(row);
+        m_detailTitleLabel->setText(segment.segmentId);
+        m_detailMetricsLabel->setText(QStringLiteral("时间范围：%1 - %2\n时长：%3 ms\n带宽：%4\nSNR：%5 dB\n评分：%6")
+                                          .arg(segment.startSample).arg(segment.endSample)
+                                          .arg(segment.durationMs, 0, 'f', 3).arg(mhz(segment.bandwidthHz))
+                                          .arg(segment.snrDb, 0, 'f', 2).arg(segment.score, 0, 'f', 3));
+        m_detailPathsLabel->setText(QStringLiteral("候选片段输出：%1\n候选局部图：%2")
+                                        .arg(QDir::toNativeSeparators(segment.outputFilePath),
+                                             segment.candidatePreviewFilePath.isEmpty()
+                                                 ? QStringLiteral("未生成")
+                                                 : QDir::toNativeSeparators(segment.candidatePreviewFilePath)));
+        if (!segment.candidatePreviewFilePath.isEmpty()
+            && QFileInfo::exists(segment.candidatePreviewFilePath)) {
+            QPixmap pixmap(segment.candidatePreviewFilePath);
+            m_spectrogramPreviewLabel->setPixmap(pixmap.scaled(m_spectrogramPreviewLabel->size(),
+                                                                Qt::KeepAspectRatio,
+                                                                Qt::SmoothTransformation));
+        } else {
+            m_spectrogramPreviewLabel->setText(QStringLiteral("当前候选没有生成局部图"));
+            m_spectrogramPreviewLabel->setPixmap(QPixmap());
+        }
+    }
+}
 
-    if (m_segmentMetric) {
-        m_segmentMetric->setValue(QString::number(result.candidateSegmentCount));
+void PreprocessPage::saveProfile()
+{
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this,
+        QStringLiteral("保存处理方案"),
+        QStringLiteral("方案名称"),
+        QLineEdit::Normal,
+        QStringLiteral("推荐识别"),
+        &ok).trimmed();
+    if (!ok || name.isEmpty()) {
+        return;
     }
-    if (m_sampleMetric) {
-        m_sampleMetric->setValue(QString::number(result.sampleRecords.size()));
+    const QString path = QDir(ProjectPaths::preprocessProfilesDirectory()).filePath(name + QStringLiteral(".json"));
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QJsonObject json;
+    json.insert(QStringLiteral("name"), name);
+    json.insert(QStringLiteral("detectionMode"), m_detectionModeCombo->currentData().toString());
+    json.insert(QStringLiteral("payloadEndian"), m_payloadEndianCombo->currentData().toString());
+    json.insert(QStringLiteral("exportSpectrogramPng"), m_exportSpectrogramCheck->isChecked());
+    json.insert(QStringLiteral("createdAt"), QDateTime::currentDateTime().toString(Qt::ISODate));
+    json.insert(QStringLiteral("pipelineVersion"), QStringLiteral("preprocess_v1"));
+    const auto edits = findChildren<QLineEdit *>();
+    for (QLineEdit *widget : edits) {
+        if (widget->objectName().startsWith(QStringLiteral("Preprocess")) && widget != m_capPathEdit && widget != m_outputDirEdit) {
+            json.insert(widget->objectName(), widget->text());
+        }
     }
-    if (m_resultsTabs) {
-        m_resultsTabs->setCurrentWidget(result.sampleRecords.isEmpty() ? m_segmentTable : m_sampleTable);
+    QSaveFile file(path);
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(QJsonDocument(json).toJson(QJsonDocument::Indented));
+        file.commit();
+        appendLog(QStringLiteral("已保存本地处理方案：%1").arg(path));
     }
+}
 
-    setRunState(result.success ? QStringLiteral("完成") : QStringLiteral("未成功"), result.success ? QStringLiteral("done") : QStringLiteral("error"));
-    QStringList lines;
-    lines << QStringLiteral("预处理完成：%1").arg(result.message);
-    lines << QStringLiteral("候选片段：%1，有效输出样本：%2").arg(result.candidateSegmentCount).arg(result.sampleRecords.size());
-    lines << result.logs;
-    m_logOutput->setPlainText(lines.join('\n'));
+void PreprocessPage::loadProfile()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("加载处理方案"),
+        ProjectPaths::preprocessProfilesDirectory(),
+        QStringLiteral("处理方案 (*.json);;所有文件 (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        appendLog(QStringLiteral("尚未找到本地处理方案。"));
+        return;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    const QJsonObject json = document.object();
+    const int modeIndex = m_detectionModeCombo->findData(json.value(QStringLiteral("detectionMode")).toString());
+    if (modeIndex >= 0) {
+        m_detectionModeCombo->setCurrentIndex(modeIndex);
+    }
+    const int endianIndex = m_payloadEndianCombo->findData(json.value(QStringLiteral("payloadEndian")).toString());
+    if (endianIndex >= 0) {
+        m_payloadEndianCombo->setCurrentIndex(endianIndex);
+    }
+    m_exportSpectrogramCheck->setChecked(json.value(QStringLiteral("exportSpectrogramPng")).toBool(false));
+    for (QLineEdit *widget : findChildren<QLineEdit *>()) {
+        if (json.contains(widget->objectName())) {
+            widget->setText(json.value(widget->objectName()).toString());
+        }
+    }
+    appendLog(QStringLiteral("已加载本地处理方案。"));
+}
+
+void PreprocessPage::resetProfile()
+{
+    m_detectionModeCombo->setCurrentIndex(0);
+    m_payloadEndianCombo->setCurrentIndex(0);
+    m_exportSpectrogramCheck->setChecked(false);
+    m_windowSamplesEdit->setText(QStringLiteral("4096"));
+    m_chunkSamplesEdit->setText(QStringLiteral("2000000"));
+    m_frequencySpanEdit->setText(QStringLiteral("12.0"));
+    m_energyOffsetEdit->setText(QStringLiteral("8.0"));
+    m_targetBandwidthEdit->setText(QStringLiteral("20.0"));
+    m_minBandwidthEdit->setText(QStringLiteral("16.0"));
+    m_minWidebandFillEdit->setText(QStringLiteral("0.42"));
+    m_minWidebandSnrEdit->setText(QStringLiteral("3.0"));
+    m_morphFrequencyCloseEdit->setText(QStringLiteral("1.2"));
+    m_shapeSplitQuantileEdit->setText(QStringLiteral("55.0"));
+    m_shapeSplitMergeGapEdit->setText(QStringLiteral("0.05"));
+    m_maxSegmentDurationEdit->setText(QStringLiteral("2.0"));
+    m_bandWindowEdit->setText(QStringLiteral("2.0"));
+    m_bandWindowOverlapEdit->setText(QStringLiteral("0.0"));
+    m_minBandScoreEdit->setText(QStringLiteral("0.02"));
+    m_cvColumnQuantileEdit->setText(QStringLiteral("40.0"));
+    m_cvOccupancyEdit->setText(QStringLiteral("0.25"));
+    m_cvMorphFrequencyEdit->setText(QStringLiteral("0.3"));
+    m_cvMorphTimeEdit->setText(QStringLiteral("0.05"));
+    m_minDurationEdit->setText(QStringLiteral("0.05"));
+    m_mergeGapEdit->setText(QStringLiteral("0.20"));
+    m_npersegEdit->setText(QStringLiteral("2048"));
+    m_noverlapEdit->setText(QStringLiteral("1536"));
+    m_spectrogramNpersegEdit->setText(QStringLiteral("512"));
+    m_spectrogramNoverlapEdit->setText(QStringLiteral("384"));
+    appendLog(QStringLiteral("已恢复推荐方案默认参数。"));
 }
 
 void PreprocessPage::saveSampleRecords(const QVector<SampleRecord> &records)
@@ -551,7 +998,10 @@ void PreprocessPage::saveSampleRecords(const QVector<SampleRecord> &records)
     for (const SampleRecord &record : records) {
         bool replaced = false;
         for (SampleRecord &existing : state.samples) {
-            if (existing.sampleId == record.sampleId) {
+            const bool sameRecord = !record.batchId.isEmpty() && existing.batchId == record.batchId
+                ? existing.sampleId == record.sampleId
+                : existing.sampleId == record.sampleId && existing.sampleFilePath == record.sampleFilePath;
+            if (sameRecord) {
                 existing = record;
                 replaced = true;
                 break;
@@ -561,55 +1011,80 @@ void PreprocessPage::saveSampleRecords(const QVector<SampleRecord> &records)
             state.samples.append(record);
         }
     }
-
     if (!store.save(state)) {
-        appendLog(QStringLiteral("状态保存失败：%1").arg(store.lastError()));
-        setValidationMessage(store.lastError(), QStringLiteral("error"));
-    } else {
-        appendLog(QStringLiteral("状态已保存：%1 个样本可在数据集页查看。").arg(records.size()));
+        appendLog(QStringLiteral("样本状态保存失败：%1").arg(store.lastError()));
     }
+}
+
+void PreprocessPage::savePreprocessBatch(const PreprocessRunResult &result)
+{
+    AppStateStore store;
+    AppState state = store.load().value_or(AppState{});
+    PreprocessBatchRecord batch;
+    batch.batchId = QFileInfo(result.batchDirectory).fileName();
+    batch.taskId = result.taskId;
+    batch.inputFilePath = m_capPathEdit->text().trimmed();
+    batch.outputDirectory = result.batchDirectory;
+    batch.summaryPath = result.summaryPath;
+    batch.profileName = m_detectionModeCombo->currentData().toString();
+    batch.state = stateForResult(result);
+    batch.createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
+    batch.candidateCount = result.candidateSegmentCount;
+    batch.sampleCount = result.sampleRecords.size();
+    batch.partial = result.partial || result.cancelled || result.timedOut;
+    bool replaced = false;
+    for (PreprocessBatchRecord &existing : state.preprocessBatches) {
+        if (existing.batchId == batch.batchId && !batch.batchId.isEmpty()) {
+            existing = batch;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced && !batch.batchId.isEmpty()) {
+        state.preprocessBatches.append(batch);
+    }
+    store.save(state);
 }
 
 void PreprocessPage::setBusy(bool busy)
 {
-    if (m_runButton) {
-        m_runButton->setEnabled(!busy);
-    }
-    if (m_demoButton) {
-        m_demoButton->setEnabled(!busy);
-    }
-    if (m_previewButton) {
-        m_previewButton->setEnabled(!busy);
-    }
-    if (m_capPathEdit) {
-        m_capPathEdit->setEnabled(!busy);
-    }
-    if (m_outputDirEdit) {
-        m_outputDirEdit->setEnabled(!busy);
-    }
-    if (m_modelPathEdit) {
-        m_modelPathEdit->setEnabled(!busy);
+    m_runButton->setEnabled(!busy);
+    m_cancelButton->setEnabled(busy);
+    m_previewButton->setEnabled(!busy);
+    m_capPathEdit->setEnabled(!busy);
+    m_outputDirEdit->setEnabled(!busy);
+    const QVector<QWidget *> controls = {
+        m_detectionModeCombo, m_payloadEndianCombo, m_exportSpectrogramCheck,
+        m_advancedParamsToggle, m_resetProfileButton, m_saveProfileButton, m_loadProfileButton,
+        m_windowSamplesEdit, m_chunkSamplesEdit, m_frequencySpanEdit, m_energyOffsetEdit,
+        m_targetBandwidthEdit, m_minBandwidthEdit, m_minWidebandFillEdit, m_minWidebandSnrEdit,
+        m_morphFrequencyCloseEdit, m_shapeSplitQuantileEdit, m_shapeSplitMergeGapEdit,
+        m_maxSegmentDurationEdit, m_bandWindowEdit, m_bandWindowOverlapEdit, m_minBandScoreEdit,
+        m_cvColumnQuantileEdit, m_cvOccupancyEdit, m_cvMorphFrequencyEdit, m_cvMorphTimeEdit,
+        m_minDurationEdit, m_mergeGapEdit, m_npersegEdit, m_noverlapEdit,
+        m_spectrogramNpersegEdit, m_spectrogramNoverlapEdit,
+    };
+    for (QWidget *control : controls) {
+        if (control) {
+            control->setEnabled(!busy);
+        }
     }
 }
 
 void PreprocessPage::setValidationMessage(const QString &message, const QString &kind)
 {
-    if (!m_validationMessage) {
-        return;
-    }
     m_validationMessage->setText(message);
     m_validationMessage->setProperty("kind", kind);
-    refreshWidgetStyle(m_validationMessage);
+    m_validationMessage->style()->unpolish(m_validationMessage);
+    m_validationMessage->style()->polish(m_validationMessage);
 }
 
 void PreprocessPage::setRunState(const QString &message, const QString &state)
 {
-    if (!m_runStateLabel) {
-        return;
-    }
     m_runStateLabel->setText(message);
     m_runStateLabel->setProperty("state", state);
-    refreshWidgetStyle(m_runStateLabel);
+    m_runStateLabel->style()->unpolish(m_runStateLabel);
+    m_runStateLabel->style()->polish(m_runStateLabel);
 }
 
 void PreprocessPage::appendLog(const QString &line)
@@ -622,25 +1097,69 @@ void PreprocessPage::appendLog(const QString &line)
 void PreprocessPage::updateCapSummary(const CapProbeResult &result)
 {
     m_versionLabel->setText(result.version.isEmpty() ? QStringLiteral("-") : result.version);
-    m_headerLengthLabel->setText(QStringLiteral("0x%1").arg(result.headerLength, 0, 16));
-    m_bandwidthLabel->setText(QStringLiteral("%1 MHz").arg(result.bandwidthHz / 1000000.0, 0, 'f', 3));
-    m_sampleRateLabel->setText(QStringLiteral("%1 MHz").arg(result.sampleRateHz / 1000000.0, 0, 'f', 3));
-    m_centerFrequencyLabel->setText(QStringLiteral("%1 MHz").arg(result.centerFrequencyHz / 1000000.0, 0, 'f', 3));
-    m_sampleCountLabel->setText(QString::number(result.frameSampleCount));
+    m_headerLengthLabel->setText(result.headerLength > 0 ? QStringLiteral("0x%1").arg(result.headerLength, 0, 16) : QStringLiteral("-"));
+    m_bandwidthLabel->setText(mhz(result.bandwidthHz));
+    m_sampleRateLabel->setText(mhz(result.sampleRateHz));
+    m_centerFrequencyLabel->setText(mhz(result.centerFrequencyHz));
+    m_sampleCountLabel->setText(result.frameSampleCount > 0 ? QString::number(result.frameSampleCount)
+                                                            : QString::number(result.statistics.sampleCount));
 }
 
-PreprocessRequest PreprocessPage::buildRequest(const QString &capPath) const
+bool PreprocessPage::buildRequest(const QString &inputPath, PreprocessRequest *request, QString *error) const
 {
-    PreprocessRequest request;
-    request.inputFilePath = capPath;
-    request.sampleOutputDir = m_outputDirEdit ? m_outputDirEdit->text().trimmed() : QString();
-    request.modelWeightsPath = m_modelPathEdit ? m_modelPathEdit->text().trimmed() : QString();
-    request.sliceLength = readInt(m_sliceLengthEdit, request.sliceLength);
-    request.energyThresholdDb = readDouble(m_energyThresholdEdit, request.energyThresholdDb);
-    request.noiseFloorDbm = readDouble(m_noiseFloorEdit, request.noiseFloorDbm);
-    request.minBandwidthMhz = readDouble(m_minBandwidthEdit, request.minBandwidthMhz);
-    request.minDurationMs = readDouble(m_minDurationEdit, request.minDurationMs);
-    request.aiConfidenceThreshold = readDouble(m_aiConfidenceEdit, request.aiConfidenceThreshold);
-    request.timeoutMs = 600000;
-    return request;
+    if (!request) {
+        return false;
+    }
+    PreprocessRequest result;
+    result.inputFilePath = inputPath;
+    result.sampleOutputDir = m_outputDirEdit->text().trimmed();
+    result.detectionMode = m_detectionModeCombo->currentData().toString();
+    result.payloadEndian = m_payloadEndianCombo->currentData().toString();
+    result.exportSpectrogramPng = m_exportSpectrogramCheck->isChecked();
+    result.computeBackend = QStringLiteral("cuda");
+    result.gpuDevice = 0;
+    result.allowCpuFallback = false;
+    if (inputPath.isEmpty() || !QFileInfo::exists(inputPath)) {
+        if (error) *error = QStringLiteral("输入文件不存在。");
+        return false;
+    }
+    const QString suffix = QFileInfo(inputPath).suffix().toLower();
+    if (suffix != QStringLiteral("cap") && suffix != QStringLiteral("iqraw")) {
+        if (error) *error = QStringLiteral("输入文件必须是 .cap 或 .iqraw。");
+        return false;
+    }
+    if (!readInt(m_windowSamplesEdit, QStringLiteral("窗口采样点"), 1024, 262144, &result.windowSamples, error)
+        || !readInt(m_chunkSamplesEdit, QStringLiteral("分块采样点"), 1024, 20000000, &result.chunkSamples, error)
+        || !readDouble(m_frequencySpanEdit, QStringLiteral("频率跨度"), 0.1, 200.0, &result.frequencySpanMhz, error)
+        || !readDouble(m_energyOffsetEdit, QStringLiteral("能量偏移"), 0.0, 80.0, &result.energyOffsetDb, error)
+        || !readDouble(m_targetBandwidthEdit, QStringLiteral("目标带宽"), 0.1, 200.0, &result.targetBandwidthMhz, error)
+        || !readDouble(m_minBandwidthEdit, QStringLiteral("最小带宽"), 0.0, 200.0, &result.minBandwidthMhz, error)
+        || !readDouble(m_minWidebandFillEdit, QStringLiteral("最小宽带填充"), 0.0, 1.0, &result.minWidebandFill, error)
+        || !readDouble(m_minWidebandSnrEdit, QStringLiteral("最小宽带 SNR"), -40.0, 80.0, &result.minWidebandSnrDb, error)
+        || !readDouble(m_morphFrequencyCloseEdit, QStringLiteral("频向闭运算"), 0.0, 200.0, &result.morphFrequencyCloseMhz, error)
+        || !readDouble(m_shapeSplitQuantileEdit, QStringLiteral("形状分割分位数"), 0.0, 100.0, &result.shapeSplitQuantile, error)
+        || !readDouble(m_shapeSplitMergeGapEdit, QStringLiteral("形状合并间隔"), 0.0, 10000.0, &result.shapeSplitMergeGapMs, error)
+        || !readDouble(m_maxSegmentDurationEdit, QStringLiteral("最大片段时长"), 0.0, 100000.0, &result.maxSegmentDurationMs, error)
+        || !readDouble(m_bandWindowEdit, QStringLiteral("频带窗口"), 0.0, 10000.0, &result.bandWindowMs, error)
+        || !readDouble(m_bandWindowOverlapEdit, QStringLiteral("窗口重叠"), 0.0, 10000.0, &result.bandWindowOverlapMs, error)
+        || !readDouble(m_minBandScoreEdit, QStringLiteral("最小频带评分"), 0.0, 1.0, &result.minBandScore, error)
+        || !readDouble(m_cvColumnQuantileEdit, QStringLiteral("CV 列分位数"), 0.0, 100.0, &result.cvColumnQuantile, error)
+        || !readDouble(m_cvOccupancyEdit, QStringLiteral("CV 最小占空"), 0.0, 1.0, &result.cvMinWindowOccupancy, error)
+        || !readDouble(m_cvMorphFrequencyEdit, QStringLiteral("CV 频向形态"), 0.0, 200.0, &result.cvMorphFrequencyMhz, error)
+        || !readDouble(m_cvMorphTimeEdit, QStringLiteral("CV 时向形态"), 0.0, 10000.0, &result.cvMorphTimeMs, error)
+        || !readDouble(m_minDurationEdit, QStringLiteral("最小时长"), 0.0, 10000.0, &result.minDurationMs, error)
+        || !readDouble(m_mergeGapEdit, QStringLiteral("片段合并间隔"), 0.0, 10000.0, &result.mergeGapMs, error)
+        || !readInt(m_npersegEdit, QStringLiteral("STFT nperseg"), 16, 262144, &result.nperseg, error)
+        || !readInt(m_noverlapEdit, QStringLiteral("STFT noverlap"), 0, 262143, &result.noverlap, error)
+        || !readInt(m_spectrogramNpersegEdit, QStringLiteral("PNG nperseg"), 16, 262144, &result.spectrogramNperseg, error)
+        || !readInt(m_spectrogramNoverlapEdit, QStringLiteral("PNG noverlap"), 0, 262143, &result.spectrogramNoverlap, error)) {
+        return false;
+    }
+    if (result.noverlap >= result.nperseg || result.spectrogramNoverlap >= result.spectrogramNperseg) {
+        if (error) *error = QStringLiteral("重叠采样点必须小于对应的窗口采样点。");
+        return false;
+    }
+    result.timeoutMs = result.exportSpectrogramPng ? 7200000 : 3600000;
+    *request = result;
+    return true;
 }

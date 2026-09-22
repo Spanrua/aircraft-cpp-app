@@ -1,11 +1,13 @@
 #include "services/UsrpDeviceService.h"
 
+#if AIRCRAFT_HAS_UHD
 #include <uhd/stream.hpp>
 #include <uhd/types/device_addr.hpp>
 #include <uhd/types/metadata.hpp>
 #include <uhd/types/stream_cmd.hpp>
 #include <uhd/types/tune_request.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
+#endif
 
 #include <QDataStream>
 #include <QDateTime>
@@ -74,6 +76,12 @@ QString UsrpDeviceInfo::displayName() const
 QVector<UsrpDeviceInfo> UsrpDeviceService::discover(QString *error) const
 {
     QVector<UsrpDeviceInfo> devices;
+#if !AIRCRAFT_HAS_UHD
+    if (error) {
+        *error = QStringLiteral("当前构建未启用 UHD/USRP 支持。请安装 UHD 开发包并重新配置 CMake。");
+    }
+    return devices;
+#else
     try {
         const uhd::device_addrs_t found = uhd::device::find(uhd::device_addr_t());
         for (const auto &addr : found) {
@@ -90,11 +98,17 @@ QVector<UsrpDeviceInfo> UsrpDeviceService::discover(QString *error) const
         }
     }
     return devices;
+#endif
 }
 
 UsrpCaptureResult UsrpDeviceService::captureToCap(const UsrpCaptureConfig &config) const
 {
     UsrpCaptureResult result;
+#if !AIRCRAFT_HAS_UHD
+    Q_UNUSED(config)
+    result.message = QStringLiteral("当前构建未启用 UHD/USRP 支持。");
+    return result;
+#else
     UsrpCaptureConfig effective = config;
     if (effective.outputFilePath.isEmpty()) {
         effective.outputFilePath = defaultOutputPath();
@@ -171,6 +185,7 @@ UsrpCaptureResult UsrpDeviceService::captureToCap(const UsrpCaptureConfig &confi
         result.message = QStringLiteral("USRP 采集失败：%1").arg(uhdError(ex));
     }
     return result;
+#endif
 }
 
 bool UsrpDeviceService::writeCapFile(const UsrpCaptureConfig &config, const QVector<QPair<qint16, qint16>> &samples, QString *error)

@@ -1,5 +1,6 @@
 #include "ui/widgets/StatusBadge.h"
 
+#include <QVariant>
 #include <QStyle>
 
 StatusBadge::StatusBadge(const QString &text, QWidget *parent)
@@ -11,7 +12,7 @@ StatusBadge::StatusBadge(const QString &text, QWidget *parent)
 void StatusBadge::setStatus(const QString &text, const QString &kind)
 {
     setText(text);
-    setProperty("kind", kind);
+    setProperty("kind", QVariant(kind));
     style()->unpolish(this);
     style()->polish(this);
 }

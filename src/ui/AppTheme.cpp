@@ -58,6 +58,68 @@ void AppTheme::apply(QApplication &app)
             padding: 20px;
         }
 
+        QWidget#DatasetCategorySelectionPanel, QWidget#DatasetReviewPanel {
+            background: #151f2a;
+            border: 1px solid rgba(148, 163, 184, 34);
+            border-radius: 10px;
+        }
+
+        QLabel#DatasetCategorySelectionTitle, QLabel#DatasetReviewTitle, QLabel#DatasetVersionSectionTitle,
+        QLabel#DatasetSpectrogramTitle {
+            color: #f8fafc;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        QWidget#DatasetSpectrogramReviewWidget {
+            background: #071018;
+            border: 1px solid rgba(96, 165, 250, 70);
+            border-radius: 8px;
+        }
+
+        QLabel#DatasetSpectrogramPathLabel {
+            color: #9fb0c1;
+            padding: 4px 0;
+        }
+
+        QLabel#DatasetSelectionSummary, QLabel#DatasetPageMessage {
+            background: rgba(255, 255, 255, 10);
+            border: 1px solid rgba(148, 163, 184, 30);
+            border-radius: 8px;
+            padding: 8px 10px;
+        }
+
+        QLabel#DatasetReadinessSummary {
+            background: rgba(255, 255, 255, 10);
+            border: 1px solid rgba(148, 163, 184, 30);
+            border-radius: 8px;
+            padding: 8px 10px;
+        }
+
+        QLabel#DatasetReadinessSummary[kind="good"] {
+            background: rgba(16, 185, 129, 22);
+            border-color: rgba(16, 185, 129, 68);
+            color: #a7f3d0;
+        }
+
+        QLabel#DatasetReadinessSummary[kind="warning"] {
+            background: rgba(245, 158, 11, 22);
+            border-color: rgba(245, 158, 11, 68);
+            color: #fcd58d;
+        }
+
+        QLabel#DatasetPageMessage[kind="good"] {
+            background: rgba(16, 185, 129, 28);
+            border-color: rgba(16, 185, 129, 78);
+            color: #a7f3d0;
+        }
+
+        QLabel#DatasetPageMessage[kind="error"] {
+            background: rgba(239, 68, 68, 28);
+            border-color: rgba(239, 68, 68, 78);
+            color: #fecaca;
+        }
+
         QPushButton {
             background: #182432;
             border: 1px solid rgba(148, 163, 184, 42);
@@ -117,6 +179,25 @@ void AppTheme::apply(QApplication &app)
 
         QPushButton[stepButton="true"][pending="true"] {
             color: #91a4b7;
+        }
+
+        QPushButton[stepButton="true"][workflowState="blocked"] {
+            color: #f4b4b4;
+            border-color: rgba(239, 68, 68, 70);
+        }
+
+        QPushButton[stepButton="true"][workflowState="ready"] {
+            border-color: rgba(96, 165, 250, 55);
+        }
+
+        QPushButton[stepButton="true"][workflowState="running"] {
+            color: #dbeafe;
+            border-color: rgba(96, 165, 250, 90);
+        }
+
+        QPushButton[stepButton="true"][workflowState="warning"] {
+            color: #fcd58d;
+            border-color: rgba(245, 158, 11, 86);
         }
 
         QPushButton[stepButton="true"]:checked {
@@ -337,6 +418,21 @@ void AppTheme::apply(QApplication &app)
             background: #131d28;
             border: 1px solid rgba(148, 163, 184, 28);
             border-radius: 8px;
+        }
+
+        QFrame#RecognitionModelPanel,
+        QFrame#RecognitionSamplePanel {
+            background: #131d28;
+            border: 1px solid rgba(148, 163, 184, 28);
+            border-radius: 8px;
+        }
+
+        QLabel#TrainingGpuStatusLabel {
+            background: rgba(59, 130, 246, 22);
+            border: 1px solid rgba(96, 165, 250, 60);
+            border-radius: 8px;
+            padding: 8px 10px;
+            color: #dbeafe;
         }
 
         QLabel[sectionTitle="true"] {

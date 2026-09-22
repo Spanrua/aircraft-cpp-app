@@ -11,17 +11,17 @@
 | C++ 标准 | C++17 | 由 `CMakeLists.txt` 固定 |
 | CMake | 3.21+ | 项目最低版本要求 |
 | 生成器 | Ninja | 当前命令行示例使用 Ninja |
-| Qt | Qt 6.6.1 `msvc2019_64` | 需要 `Core`、`Gui`、`Widgets`；测试需要 `Test` |
+| Qt | Qt 5.12.10+ `msvc2017_64` 或 Qt 6.x | 需要 `Core`、`Gui`、`Widgets`；测试需要 `Test` |
 | UHD SDK | 默认 `D:/uhd` | 可通过 `-DUHD_ROOT=...` 覆盖 |
 | Boost | 头文件即可 | UHD C++ 头文件依赖 Boost 头文件 |
 
-当前不要使用 Anaconda Qt 5.15 的 qmake Kit。该项目是 Qt6/CMake 工程。
+当前不要使用 Anaconda Qt 5.15 的 qmake Kit。该项目支持 Qt 5.12.10+ 与 Qt 6.x，但主构建入口是 CMake。
 
 ## CMake 变量
 
 | 变量 | 示例值 | 用途 |
 | --- | --- | --- |
-| `CMAKE_PREFIX_PATH` | `D:/Qt/6.6.1/msvc2019_64` | 指向 Qt6 安装目录 |
+| `CMAKE_PREFIX_PATH` | `D:/Qt/5.12.10/5.12.10/msvc2017_64` | 指向目标 Qt 安装目录 |
 | `UHD_ROOT` | `D:/uhd` | 指向 UHD SDK 根目录 |
 | `BOOST_INCLUDE_DIR` | `E:/anaconda/Library/include` | 可手动指定 Boost 头文件目录 |
 | `BUILD_TESTING` | `ON` | 构建 Qt Test 测试目标 |
@@ -39,7 +39,7 @@ Boost 自动查找顺序包括：
 配置：
 
 ```powershell
-cmd /c "call D:\VS\BuildTools2022\Common7\Tools\VsDevCmd.bat -arch=amd64 -host_arch=amd64 && D:\VS\BuildTools2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe -S D:\cqt_platform\aircraft_project\cpp_app -B D:\cqt_platform\aircraft_project\cpp_app\build-release -G Ninja -DCMAKE_MAKE_PROGRAM=D:\VS\BuildTools2022\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe -DCMAKE_PREFIX_PATH=D:/Qt/6.6.1/msvc2019_64 -DUHD_ROOT=D:/uhd"
+cmd /c "call D:\VS\BuildTools2022\Common7\Tools\VsDevCmd.bat -arch=amd64 -host_arch=amd64 && D:\VS\BuildTools2022\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe -S D:\cqt_platform\aircraft_project\cpp_app -B D:\cqt_platform\aircraft_project\cpp_app\build-release -G Ninja -DCMAKE_MAKE_PROGRAM=D:\VS\BuildTools2022\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe -DCMAKE_PREFIX_PATH=D:/Qt/5.12.10/5.12.10/msvc2017_64 -DUHD_ROOT=D:/uhd"
 ```
 
 构建：
