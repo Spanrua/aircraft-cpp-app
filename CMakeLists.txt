@@ -83,26 +83,63 @@ if(NOT BOOST_INCLUDE_DIR AND AIRCRAFT_ENABLE_UHD)
 endif()
 
 if(AIRCRAFT_ENABLE_NI_VISA)
-    set(NI_VISA_INCLUDE_DIR "$ENV{NI_VISA_INCLUDE_DIR}" CACHE PATH "Directory containing visa.h")
-    set(NI_VISA_LIBRARY "$ENV{NI_VISA_LIBRARY}" CACHE FILEPATH "Path to the VISA shared library")
+    set(NI_VISA_INCLUDE_DIR "" CACHE PATH "Directory containing visa.h")
+    set(NI_VISA_LIBRARY "" CACHE FILEPATH "Path to the VISA import library")
+
+    set(_NI_VISA_INCLUDE_DIR_VALUE "${NI_VISA_INCLUDE_DIR}")
+    set(_NI_VISA_LIBRARY_VALUE "${NI_VISA_LIBRARY}")
+    if(NOT _NI_VISA_INCLUDE_DIR_VALUE AND DEFINED ENV{NI_VISA_INCLUDE_DIR})
+        set(_NI_VISA_INCLUDE_DIR_VALUE "$ENV{NI_VISA_INCLUDE_DIR}")
+    endif()
+    if(NOT _NI_VISA_LIBRARY_VALUE AND DEFINED ENV{NI_VISA_LIBRARY})
+        set(_NI_VISA_LIBRARY_VALUE "$ENV{NI_VISA_LIBRARY}")
+    endif()
+
     if(WIN32)
-        find_path(NI_VISA_INCLUDE_DIR
-            NAMES visa.h
-            PATHS "C:/Program Files/IVI Foundation/VISA/Win64/Include"
-        )
-        find_library(NI_VISA_LIBRARY
-            NAMES visa64 visa
-            PATHS "C:/Program Files/IVI Foundation/VISA/Win64/Lib_x64/msc"
-        )
+        if(NOT _NI_VISA_INCLUDE_DIR_VALUE)
+            find_path(_NI_VISA_INCLUDE_DIR_FOUND
+                NAMES visa.h
+                NO_CACHE
+                PATHS "C:/Program Files/IVI Foundation/VISA/Win64/Include"
+            )
+        else()
+            set(_NI_VISA_INCLUDE_DIR_FOUND "${_NI_VISA_INCLUDE_DIR_VALUE}")
+        endif()
+        if(NOT _NI_VISA_LIBRARY_VALUE)
+            find_library(_NI_VISA_LIBRARY_FOUND
+                NAMES visa64 visa
+                NO_CACHE
+                PATHS "C:/Program Files/IVI Foundation/VISA/Win64/Lib_x64/msc"
+            )
+        else()
+            set(_NI_VISA_LIBRARY_FOUND "${_NI_VISA_LIBRARY_VALUE}")
+        endif()
     else()
-        find_path(NI_VISA_INCLUDE_DIR
-            NAMES visa.h
-            PATHS /usr/include /usr/local/include
-        )
-        find_library(NI_VISA_LIBRARY
-            NAMES visa nivisa
-            PATHS /usr/lib /usr/lib64 /usr/local/lib /usr/local/lib64
-        )
+        if(NOT _NI_VISA_INCLUDE_DIR_VALUE)
+            find_path(_NI_VISA_INCLUDE_DIR_FOUND
+                NAMES visa.h
+                NO_CACHE
+                PATHS /usr/include /usr/local/include
+            )
+        else()
+            set(_NI_VISA_INCLUDE_DIR_FOUND "${_NI_VISA_INCLUDE_DIR_VALUE}")
+        endif()
+        if(NOT _NI_VISA_LIBRARY_VALUE)
+            find_library(_NI_VISA_LIBRARY_FOUND
+                NAMES visa nivisa
+                NO_CACHE
+                PATHS /usr/lib /usr/lib64 /usr/local/lib /usr/local/lib64
+            )
+        else()
+            set(_NI_VISA_LIBRARY_FOUND "${_NI_VISA_LIBRARY_VALUE}")
+        endif()
+    endif()
+
+    if(_NI_VISA_INCLUDE_DIR_FOUND)
+        set(NI_VISA_INCLUDE_DIR "${_NI_VISA_INCLUDE_DIR_FOUND}" CACHE PATH "Directory containing visa.h" FORCE)
+    endif()
+    if(_NI_VISA_LIBRARY_FOUND)
+        set(NI_VISA_LIBRARY "${_NI_VISA_LIBRARY_FOUND}" CACHE FILEPATH "Path to the VISA import library" FORCE)
     endif()
 endif()
 if(AIRCRAFT_ENABLE_NI_VISA AND (NOT NI_VISA_INCLUDE_DIR OR NOT NI_VISA_LIBRARY))
@@ -135,6 +172,7 @@ endif()
 set(AIRCRAFT_UI_TEST_ENVIRONMENT
     "QT_QPA_PLATFORM=offscreen"
     "QT_QPA_PLATFORM_PLUGIN_PATH=${QT_PLATFORM_PLUGIN_DIR}"
+    "AIRCRAFT_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-data"
 )
 
 set(AIRCRAFT_CORE_SOURCES
@@ -147,9 +185,11 @@ set(AIRCRAFT_CORE_SOURCES
     src/services/CeyearIqReceiver.cpp
     src/services/CeyearPscReceiver.cpp
     src/services/CeyearPscSweep.cpp
+    src/services/PscWidebandAlertDetector.cpp
     src/services/CeyearVisaQuery.cpp
     src/services/PreprocessProcessRunner.cpp
     src/services/RecognitionProcessRunner.cpp
+    src/services/SignalCleaningProcessRunner.cpp
     src/services/TrainingProcessRunner.cpp
     src/services/UsrpDeviceService.cpp
 )
@@ -189,6 +229,7 @@ if(QT_VERSION_MAJOR GREATER_EQUAL 6)
         src/ui/pages/DatasetPage.cpp
         src/ui/pages/PreprocessPage.cpp
         src/ui/pages/RecognitionPage.cpp
+        src/ui/pages/SignalCleaningPage.cpp
         src/ui/pages/TrainPage.cpp
         src/ui/widgets/IllustrationPanel.cpp
         src/ui/widgets/MetricCard.cpp
@@ -208,6 +249,7 @@ else()
         src/ui/pages/DatasetPage.cpp
         src/ui/pages/PreprocessPage.cpp
         src/ui/pages/RecognitionPage.cpp
+        src/ui/pages/SignalCleaningPage.cpp
         src/ui/pages/TrainPage.cpp
         src/ui/widgets/IllustrationPanel.cpp
         src/ui/widgets/MetricCard.cpp
@@ -265,6 +307,7 @@ if(BUILD_TESTING)
             src/ui/pages/DatasetPage.cpp
             src/ui/pages/PreprocessPage.cpp
             src/ui/pages/RecognitionPage.cpp
+            src/ui/pages/SignalCleaningPage.cpp
             src/ui/pages/TrainPage.cpp
             src/ui/widgets/IllustrationPanel.cpp
             src/ui/widgets/MetricCard.cpp
@@ -284,6 +327,7 @@ if(BUILD_TESTING)
             src/ui/pages/DatasetPage.cpp
             src/ui/pages/PreprocessPage.cpp
             src/ui/pages/RecognitionPage.cpp
+            src/ui/pages/SignalCleaningPage.cpp
             src/ui/pages/TrainPage.cpp
             src/ui/widgets/IllustrationPanel.cpp
             src/ui/widgets/MetricCard.cpp
