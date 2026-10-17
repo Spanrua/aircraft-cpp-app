@@ -1,11 +1,14 @@
 #include <QtTest/QtTest>
 
+#include "core/Records.h"
+#include "services/AppStateStore.h"
 #include "services/CeyearVisaService.h"
 #include "ui/MainWindow.h"
 #include "ui/pages/CapturePage.h"
 #include "ui/pages/DatasetPage.h"
 #include "ui/pages/PreprocessPage.h"
 #include "ui/pages/RecognitionPage.h"
+#include "ui/pages/SignalCleaningPage.h"
 #include "ui/pages/SweepPage.h"
 #include "ui/pages/TrainPage.h"
 #include "ui/widgets/StepNavigator.h"
@@ -15,10 +18,14 @@
 
 #include <memory>
 
+#include <QAbstractButton>
 #include <QApplication>
+#include <QShortcut>
 #include <QByteArray>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QFileDialog>
 #include <QFrame>
 #include <QGroupBox>
 #include <QLabel>
@@ -34,12 +41,14 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QThread>
+#include <QTimer>
 #include <QTemporaryDir>
 #include <QImage>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 
 static QByteArray minimalCeyearIfIqPacket()
 {
@@ -64,6 +73,69 @@ static QByteArray minimalCeyearIfIqPacket()
     packet[92] = '\xFE';
     packet[93] = '\xFF';
     return packet;
+}
+
+static void clickActiveMessageBoxButton(const QString &buttonText, int attempts = 25)
+{
+    QTimer::singleShot(10, [buttonText, attempts]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+        if (!dialog) {
+            if (attempts > 0) {
+                clickActiveMessageBoxButton(buttonText, attempts - 1);
+            }
+            return;
+        }
+
+        const auto buttons = dialog->findChildren<QPushButton *>();
+        for (QPushButton *button : buttons) {
+
+            QString normalized = button->text();
+            normalized.remove(QLatin1Char('&'));
+            if (normalized == buttonText) {
+                if (auto *pushButton = qobject_cast<QPushButton *>(button)) {
+                    QTest::mouseClick(pushButton, Qt::LeftButton);
+                } else {
+                    button->click();
+                }
+                return;
+            }
+        }
+
+        if (attempts > 0) {
+            clickActiveMessageBoxButton(buttonText, attempts - 1);
+        }
+    });
+}
+
+static void selectFileInActiveDialog(const QString &path, int attempts = 25)
+{
+    QTimer::singleShot(10, [path, attempts]() {
+        auto *dialog = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+        if (!dialog) {
+            if (attempts > 0) {
+                selectFileInActiveDialog(path, attempts - 1);
+            }
+            return;
+        }
+        dialog->selectFile(path);
+        static_cast<QDialog *>(dialog)->done(QDialog::Accepted);
+    });
+}
+
+static void selectDirectoryInActiveDialog(const QString &path, int attempts = 25)
+{
+    QTimer::singleShot(10, [path, attempts]() {
+        auto *dialog = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+        if (!dialog) {
+            if (attempts > 0) {
+                selectDirectoryInActiveDialog(path, attempts - 1);
+            }
+            return;
+        }
+        dialog->setDirectory(path);
+        dialog->selectFile(path);
+        static_cast<QDialog *>(dialog)->done(QDialog::Accepted);
+    });
 }
 
 class FakeUsrpDeviceService : public IUsrpDeviceService
@@ -286,6 +358,9 @@ public:
     {
         lastResource = resource;
         stopPscSweepCount++;
+        if (pscSweepStopDelayMs > 0) {
+            QThread::msleep(static_cast<unsigned long>(pscSweepStopDelayMs));
+        }
 
         CeyearCaptureResult result;
         result.success = true;
@@ -311,6 +386,7 @@ public:
     mutable int stopPscSweepCount = 0;
     int triggerDelayMs = 0;
     int pscSweepDelayMs = 0;
+    int pscSweepStopDelayMs = 0;
     bool pscSweepStartSucceeds = true;
     bool pscSweepSystemErrorClear = true;
     QString pscSweepCommandErrorResponse;
@@ -332,7 +408,11 @@ private slots:
     void waterfallWidgetRendersSingleBinWidebandAlertFromCenterAndBandwidth();
     void waterfallWidgetClipsWidebandAlertBandToPlot();
     void sweepPageExposesPscControlsAndWaterfall();
+    void sweepPageExposesOfflineCsvReplayButton();
+    void sweepPageReplaysOfflineFramesWithoutStartingHardware();
+    void sweepPageOmitsBehaviorTaggingControls();
     void sweepPageEmitsConfirmedCandidateFrequency();
+    void sweepPageStopsActiveSweepBeforeConfirmingCandidate();
     void sweepPageStartsPscSweepFromDefaultSegments();
     void sweepPageStartsPscSweepWithoutBlockingUi();
     void sweepPageCommitsEditedFrequencyCellsBeforeStartingSweep();
@@ -340,30 +420,60 @@ private slots:
     void sweepPageShowsPscSystemErrorDetails();
     void sweepPageShowsPscStartFailure();
     void sweepPageUpdatesWaterfallAndCandidatesFromPscFrame();
+    void sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity();
+    void sweepPageResetClearsWidebandAlert();
     void sweepPageClearsWaterfallWhenStartingNewSweep();
     void sweepPageSavesPscFramesToCsv();
     void stepNavigatorShowsNumberedStepsAndCompletion();
     void stepNavigatorExposesBlockedReason();
+    void stepNavigatorShowsVisibleTextualState();
     void mainWindowContainsWorkflowStatusLabels();
+    void mainWindowShowsNextActionInWorkflowBanner();
+    void mainWindowLocksBlockedSignalCleaningAction();
+    void mainWindowDefaultConstructorStaysAlive();
+    void mainWindowDefaultConstructorShowsWithoutCorruption();
+    void mainWindowKeepsSweepContentVisibleAtMinimumSize();
     void preprocessPageExposesRealProcessingControls();
     void preprocessPageUsesThreeColumnWorkbenchLayout();
     void preprocessPageSeparatesParametersAndResultTabs();
     void preprocessPageUsesFlatPanelsForSummaryAndParameters();
     void preprocessPageKeepsParameterInputsReadable();
     void preprocessPageUsesPageLevelVerticalScrolling();
+    void preprocessPageExplainsTermsAndModes();
+    void signalCleaningPageExposesIndependentWindowWorkflow();
+    void workflowPagesSeparateAutomaticChecksFromManualReview();
     void datasetPageExposesCategorySelectionWorkbench();
+    void datasetPageUsesSingleCandidateReviewWorkbench();
     void datasetPageExposesSpectrogramReviewWidget();
+    void datasetPageLoadsCandidateSpectrogramForSelectedReviewRow();
     void datasetPageUsesStandardLabelSelector();
+    void datasetPageShowsReviewQueueAndKeyboardActions();
     void trainPageExposesBackendControls();
     void recognitionPageExposesModelAndSampleWorkflow();
+    void recognitionPageRegistersExternalModelForReuse();
+    void recognitionPageMarksBareExternalModelUnverified();
+    void recognitionPageForwardsSelectedSampleIndex();
+    void recognitionPageEnablesBatchAfterSelectingExternalSamples();
+    void recognitionPageEnablesBatchAfterSelectingExternalSampleDirectory();
+    void recognitionPageFusesFolderWindowsAsOneCaptureSegment();
+    void recognitionPageMapsDroneIndividualToProtocolType();
+    void recognitionPageBatchRecognizesAllDatasetSamples();
+    void recognitionPageBatchShowsProgressAndLocksInputs();
+    void recognitionPageRetriesFailedBatchSamples();
+    void recognitionPageShowsResultProvenance();
     void capturePageDiscoversDevicesAndRunsCapture();
+    void capturePageUses3943BOnlyHardwareUi();
+    void capturePageShowsPersistent3943BReadiness();
+    void capturePageExposesCopyDiagnosticsAction();
+    void capturePageOmitsBehaviorTaggingControls();
     void capturePageSwitchesDeviceTypesAndPassesUsrpParameters();
     void capturePageUsesConsoleLayoutForInstrumentControls();
     void capturePageUsesDeviceSpecificParameterPanels();
     void capturePageSeparatesBasicAdvancedParamsAndResultTabs();
     void capturePageUsesThreeColumnWorkbenchLayout();
     void capturePageUsesPageLevelVerticalScrolling();
-    void capturePageUsesColumnScrollContainersAtMinimumSize();
+    void capturePageUsesSinglePageScrollAtMinimumSize();
+    void capturePageExplainsTermsAndModes();
     void capturePageKeepsResultsTabsReadableAtMinimumSize();
     void capturePageRejectsInvalidUsrpParameters();
     void capturePageRunsCaptureWithoutBlockingUi();
@@ -371,6 +481,7 @@ private slots:
     void capturePageDoesNotExposeSeparate3943BControlWrite();
     void capturePageDefaults3943BToVerifiedManualIqPath();
     void capturePageExposes3943BPointCountOnly();
+    void capturePageConfirmsContinuous3943BBeforeStarting();
     void capturePageContinuous3943BCaptureSchedulesNextFile();
     void capturePageContinuousCaptureStartsNextRoundImmediately();
     void capturePageConfigures3943BPathFromMainButton();
@@ -381,6 +492,9 @@ private slots:
     void capturePageKeeps3943BStopEnabledDuringBusyState();
     void mainWindowStartsWithSweepLocationBeforeCapture();
     void mainWindowPassesSweepFrequencyToCapturePage();
+    void mainWindowReflectsCompletedSweepAndCapture();
+    void mainWindowKeepsRecognitionReadyUntilRecognitionSucceeds();
+    void mainWindowResetsRecognitionCompletionWhenModelChanges();
     void mainWindowShowsCaptureWorkbench();
     void mainWindowStaysAliveAfterShowing();
     void stackedPagesStayAliveAfterShowing();
@@ -635,6 +749,53 @@ void UiTests::sweepPageExposesPscControlsAndWaterfall()
     QVERIFY(!saveButton->isEnabled());
 }
 
+void UiTests::sweepPageExposesOfflineCsvReplayButton()
+{
+    SweepPage page;
+
+    auto *importButton = page.findChild<QPushButton *>(QStringLiteral("ImportPscSweepCsvButton"));
+
+    QVERIFY(importButton != nullptr);
+    QCOMPARE(importButton->text(), QStringLiteral("导入并回放 CSV"));
+    QVERIFY(importButton->isEnabled());
+}
+
+void UiTests::sweepPageReplaysOfflineFramesWithoutStartingHardware()
+{
+    auto service = std::make_unique<FakeCeyearVisaService>();
+    FakeCeyearVisaService *servicePtr = service.get();
+    SweepPage page(std::move(service));
+    auto *importButton = page.findChild<QPushButton *>(QStringLiteral("ImportPscSweepCsvButton"));
+    auto *waterfall = page.findChild<WaterfallWidget *>(QStringLiteral("PscWaterfallWidget"));
+    auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+    auto *statusLabel = page.findChild<QLabel *>(QStringLiteral("PscSweepStatusLabel"));
+    QVERIFY(importButton != nullptr);
+    QVERIFY(waterfall != nullptr);
+    QVERIFY(candidateTable != nullptr);
+    QVERIFY(statusLabel != nullptr);
+
+    const QVector<CeyearPscFrame> frames = {
+        {{{900000000.0, -72.0}, {901000000.0, -35.0}}},
+        {{{900000000.0, -71.0}, {901000000.0, -34.0}}},
+    };
+    page.startOfflineReplayForTest(frames);
+
+    QTRY_COMPARE(waterfall->frameCount(), 2);
+    QTRY_VERIFY(candidateTable->rowCount() >= 1);
+    QTRY_VERIFY(statusLabel->text().contains(QStringLiteral("离线演示回放已完成")));
+    QCOMPARE(servicePtr->startPscSweepCount, 0);
+    QCOMPARE(servicePtr->stopPscSweepCount, 0);
+}
+
+void UiTests::sweepPageOmitsBehaviorTaggingControls()
+{
+    SweepPage page;
+
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("SweepDroneIdEdit")) == nullptr);
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("SweepModelEdit")) == nullptr);
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("SweepBehaviorCombo")) == nullptr);
+}
+
 void UiTests::sweepPageEmitsConfirmedCandidateFrequency()
 {
     SweepPage page;
@@ -651,6 +812,38 @@ void UiTests::sweepPageEmitsConfirmedCandidateFrequency()
 
     QCOMPARE(spy.size(), 1);
     QCOMPARE(spy.first().at(0).toDouble(), 901000000.0);
+}
+
+void UiTests::sweepPageStopsActiveSweepBeforeConfirmingCandidate()
+{
+    auto service = std::make_unique<FakeCeyearVisaService>();
+    FakeCeyearVisaService *servicePtr = service.get();
+    servicePtr->pscSweepStopDelayMs = 200;
+    SweepPage page(std::move(service));
+    QSignalSpy frequencySpy(&page, SIGNAL(frequencyConfirmed(double)));
+
+    auto *startButton = page.findChild<QPushButton *>(QStringLiteral("StartPscSweepButton"));
+    auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+    auto *confirmButton = page.findChild<QPushButton *>(QStringLiteral("ConfirmPscCandidateButton"));
+    QVERIFY(startButton != nullptr);
+    QVERIFY(candidateTable != nullptr);
+    QVERIFY(confirmButton != nullptr);
+
+    QTest::mouseClick(startButton, Qt::LeftButton);
+    QTRY_COMPARE(servicePtr->startPscSweepCount, 1);
+    auto *stopButton = page.findChild<QPushButton *>(QStringLiteral("StopPscSweepButton"));
+    QVERIFY(stopButton != nullptr);
+    QTRY_VERIFY(stopButton->isEnabled());
+
+    page.setCandidateRowsForTest({{901000000.0, -38.0, 3}});
+    candidateTable->selectRow(0);
+    QTest::mouseClick(confirmButton, Qt::LeftButton);
+
+    QTRY_COMPARE(servicePtr->stopPscSweepCount, 1);
+    QTest::qWait(50);
+    QCOMPARE(frequencySpy.count(), 0);
+    QTRY_COMPARE(frequencySpy.count(), 1);
+    QCOMPARE(frequencySpy.first().at(0).toDouble(), 901000000.0);
 }
 
 void UiTests::sweepPageStartsPscSweepFromDefaultSegments()
@@ -833,6 +1026,69 @@ void UiTests::sweepPageUpdatesWaterfallAndCandidatesFromPscFrame()
     QCOMPARE(candidateTable->item(0, 0)->text(), QStringLiteral("901000000"));
 }
 
+void UiTests::sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity()
+{
+    SweepPage page;
+
+    auto *alertLabel = page.findChild<QLabel *>(QStringLiteral("PscWidebandAlertLabel"));
+    auto *waterfall = page.findChild<WaterfallWidget *>(QStringLiteral("PscWaterfallWidget"));
+    auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+    QVERIFY(alertLabel != nullptr);
+    QVERIFY(waterfall != nullptr);
+    QVERIFY(candidateTable != nullptr);
+    QVERIFY(alertLabel->isHidden());
+
+    CeyearPscFrame frame;
+    for (int index = 0; index <= 20; ++index) {
+        frame.bins.append({2400000000.0 + index * 1000000.0, -35.0});
+    }
+
+    page.appendPscFrameForTest(frame);
+    page.appendPscFrameForTest(frame);
+
+    QVERIFY(!alertLabel->isHidden());
+    QVERIFY(alertLabel->text().contains(QStringLiteral("疑似无人机宽带信号")));
+    QVERIFY(waterfall->hasAlertBand());
+    QCOMPARE(candidateTable->columnCount(), 5);
+
+    bool foundAlert = false;
+    for (int row = 0; row < candidateTable->rowCount(); ++row) {
+        const QTableWidgetItem *stateItem = candidateTable->item(row, 4);
+        if (stateItem && stateItem->text() == QStringLiteral("告警")) {
+            foundAlert = true;
+            QCOMPARE(candidateTable->item(row, 3)->text(), QStringLiteral("21.0"));
+        }
+    }
+    QVERIFY(foundAlert);
+}
+
+void UiTests::sweepPageResetClearsWidebandAlert()
+{
+    auto service = std::make_unique<FakeCeyearVisaService>();
+    SweepPage page(std::move(service));
+
+    auto *alertLabel = page.findChild<QLabel *>(QStringLiteral("PscWidebandAlertLabel"));
+    auto *waterfall = page.findChild<WaterfallWidget *>(QStringLiteral("PscWaterfallWidget"));
+    auto *startButton = page.findChild<QPushButton *>(QStringLiteral("StartPscSweepButton"));
+    QVERIFY(alertLabel != nullptr);
+    QVERIFY(waterfall != nullptr);
+    QVERIFY(startButton != nullptr);
+
+    CeyearPscFrame frame;
+    for (int index = 0; index <= 20; ++index) {
+        frame.bins.append({2400000000.0 + index * 1000000.0, -35.0});
+    }
+    page.appendPscFrameForTest(frame);
+    page.appendPscFrameForTest(frame);
+    QVERIFY(!alertLabel->isHidden());
+    QVERIFY(waterfall->hasAlertBand());
+
+    QTest::mouseClick(startButton, Qt::LeftButton);
+
+    QVERIFY(alertLabel->isHidden());
+    QVERIFY(!waterfall->hasAlertBand());
+}
+
 void UiTests::sweepPageClearsWaterfallWhenStartingNewSweep()
 {
     auto service = std::make_unique<FakeCeyearVisaService>();
@@ -900,9 +1156,12 @@ void UiTests::stepNavigatorShowsNumberedStepsAndCompletion()
     QCOMPARE(buttons.at(0)->text(), QStringLiteral("1  Capture"));
     QCOMPARE(buttons.at(1)->text(), QStringLiteral("2  Preprocess"));
     QCOMPARE(buttons.at(2)->text(), QStringLiteral("3  Dataset"));
-    QVERIFY(buttons.at(0)->property("completed").toBool());
+    QVERIFY(!buttons.at(0)->property("completed").toBool());
     QVERIFY(buttons.at(1)->isChecked());
     QVERIFY(!buttons.at(2)->property("completed").toBool());
+
+    navigator.setStepStatus(0, WorkflowStepState::Completed, QStringLiteral("采集已完成"));
+    QVERIFY(buttons.at(0)->property("completed").toBool());
 }
 
 void UiTests::stepNavigatorExposesBlockedReason()
@@ -921,6 +1180,20 @@ void UiTests::stepNavigatorExposesBlockedReason()
     QCOMPARE(buttons.at(1)->toolTip(), QStringLiteral("请先生成训练集版本"));
 }
 
+void UiTests::stepNavigatorShowsVisibleTextualState()
+{
+    StepNavigator navigator;
+    navigator.setSteps({QStringLiteral("输入"), QStringLiteral("训练")});
+    navigator.setStepStatus(1,
+                            WorkflowStepState::Blocked,
+                            QStringLiteral("等待数据集"),
+                            QStringLiteral("请先生成训练集版本"));
+
+    const auto buttons = navigator.findChildren<QPushButton *>();
+    QCOMPARE(buttons.size(), 2);
+    QVERIFY(buttons.at(1)->text().contains(QStringLiteral("已阻断")));
+}
+
 void UiTests::mainWindowContainsWorkflowStatusLabels()
 {
     MainWindow window(std::make_unique<FakeCeyearVisaService>(),
@@ -933,10 +1206,81 @@ void UiTests::mainWindowContainsWorkflowStatusLabels()
     QVERIFY(window.findChild<QLabel *>(QStringLiteral("DataPathLabel")) != nullptr);
 }
 
+void UiTests::mainWindowLocksBlockedSignalCleaningAction()
+{
+    MainWindow window(std::make_unique<FakeCeyearVisaService>(),
+                      std::make_unique<FakeUsrpDeviceService>(),
+                      std::make_unique<FakeCeyearVisaService>());
+
+    auto *startButton = window.findChild<QPushButton *>(QStringLiteral("StartSignalCleaningButton"));
+    auto *gateMessage = window.findChild<QLabel *>(QStringLiteral("SignalCleaningWorkflowGateLabel"));
+    QVERIFY(startButton != nullptr);
+    QVERIFY(gateMessage != nullptr);
+    QVERIFY(!startButton->isEnabled());
+    QVERIFY(!gateMessage->isHidden());
+    QVERIFY(gateMessage->text().contains(QStringLiteral("请先完成预处理")));
+}
+
+void UiTests::mainWindowDefaultConstructorStaysAlive()
+{
+    MainWindow window;
+    QVERIFY(window.findChild<QStackedWidget *>(QStringLiteral("WorkflowStack")) != nullptr);
+    QCoreApplication::processEvents();
+    QVERIFY(window.isEnabled());
+}
+
+void UiTests::mainWindowDefaultConstructorShowsWithoutCorruption()
+{
+    MainWindow window;
+    window.show();
+    QCoreApplication::processEvents();
+    QTest::qWait(1000);
+    QCoreApplication::processEvents();
+    QVERIFY(window.isVisible());
+    QVERIFY(window.isEnabled());
+}
+
+void UiTests::mainWindowKeepsSweepContentVisibleAtMinimumSize()
+{
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QCoreApplication::processEvents();
+
+    auto *stack = window.findChild<QStackedWidget *>(QStringLiteral("WorkflowStack"));
+    auto *sweepPage = window.findChild<SweepPage *>();
+    auto *scrollArea = sweepPage
+        ? sweepPage->findChild<QScrollArea *>(QStringLiteral("WorkflowPageScrollArea"))
+        : nullptr;
+    auto *importButton = sweepPage
+        ? sweepPage->findChild<QPushButton *>(QStringLiteral("ImportPscSweepCsvButton"))
+        : nullptr;
+    auto *waterfall = sweepPage
+        ? sweepPage->findChild<WaterfallWidget *>(QStringLiteral("PscWaterfallWidget"))
+        : nullptr;
+
+    QVERIFY(stack != nullptr);
+    QVERIFY(sweepPage != nullptr);
+    QVERIFY(scrollArea != nullptr);
+    QVERIFY(importButton != nullptr);
+    QVERIFY(waterfall != nullptr);
+    QCOMPARE(stack->currentWidget(), static_cast<QWidget *>(sweepPage));
+    QVERIFY2(sweepPage->height() > 240, "扫频页被布局压缩到不可用高度");
+    QVERIFY2(scrollArea->viewport()->height() > 180,
+             qPrintable(QStringLiteral("扫频内容滚动区不可见：page=%1px, viewport=%2px, stack=%3px")
+                            .arg(sweepPage->height())
+                            .arg(scrollArea->viewport()->height())
+                            .arg(stack->height())));
+    QVERIFY(importButton->isVisible());
+    QVERIFY(waterfall->isVisible());
+}
+
 void UiTests::preprocessPageExposesRealProcessingControls()
 {
     PreprocessPage page;
     auto *runButton = page.findChild<QPushButton *>(QStringLiteral("StartPreprocessButton"));
+    auto *cancelButton = page.findChild<QPushButton *>(QStringLiteral("CancelPreprocessButton"));
     auto *detectionModeCombo = page.findChild<QComboBox *>(QStringLiteral("PreprocessDetectionModeCombo"));
     auto *payloadEndianCombo = page.findChild<QComboBox *>(QStringLiteral("PreprocessPayloadEndianCombo"));
     auto *exportSpectrogramCheck = page.findChild<QCheckBox *>(QStringLiteral("PreprocessExportSpectrogramCheck"));
@@ -952,7 +1296,8 @@ void UiTests::preprocessPageExposesRealProcessingControls()
     QVERIFY(!exportSpectrogramCheck->isChecked());
     QVERIFY(!title->text().contains(QChar(0xfffd)));
     QCOMPARE(title->text(), QStringLiteral("信号预处理"));
-    QVERIFY(page.findChild<QPushButton *>(QStringLiteral("CancelPreprocessButton")) != nullptr);
+    QVERIFY(cancelButton != nullptr);
+    QCOMPARE(cancelButton->text(), QStringLiteral("取消并保留结果"));
     QVERIFY(page.findChild<QProgressBar *>(QStringLiteral("PreprocessProgressBar")) != nullptr);
     QVERIFY(page.findChild<QWidget *>(QStringLiteral("PreprocessResultDetailPanel")) != nullptr);
     auto *backendLabel = page.findChild<QLabel *>(QStringLiteral("PreprocessComputeBackendLabel"));
@@ -999,7 +1344,7 @@ void UiTests::preprocessPageSeparatesParametersAndResultTabs()
 
     QTest::mouseClick(advancedToggle, Qt::LeftButton);
     QVERIFY(advancedPanel->isVisible());
-    QCOMPARE(advancedToggle->text(), QStringLiteral("收起专家设置"));
+    QCOMPARE(advancedToggle->text(), QStringLiteral("切换到推荐模式"));
 }
 
 void UiTests::preprocessPageUsesFlatPanelsForSummaryAndParameters()
@@ -1084,6 +1429,18 @@ void UiTests::datasetPageExposesCategorySelectionWorkbench()
     QVERIFY(!includePartial->isChecked());
 }
 
+void UiTests::datasetPageUsesSingleCandidateReviewWorkbench()
+{
+    DatasetPage page;
+    auto *workbench = page.findChild<QWidget *>(QStringLiteral("DatasetReviewWorkbench"));
+
+    QVERIFY(workbench != nullptr);
+    QVERIFY(page.findChild<QWidget *>(QStringLiteral("DatasetReviewPanel")) == nullptr);
+    QVERIFY(workbench->findChild<QComboBox *>(QStringLiteral("DatasetSampleStateFilter")) != nullptr);
+    QVERIFY(workbench->findChild<QComboBox *>(QStringLiteral("DatasetReviewLabelCombo")) != nullptr);
+    QVERIFY(workbench->findChild<QPushButton *>(QStringLiteral("DatasetMarkApprovedButton")) != nullptr);
+}
+
 void UiTests::datasetPageExposesSpectrogramReviewWidget()
 {
     DatasetPage page;
@@ -1113,6 +1470,40 @@ void UiTests::datasetPageExposesSpectrogramReviewWidget()
     reviewWidget->clearImage(QStringLiteral("等待下一张图"));
     QVERIFY(!reviewWidget->hasImage());
     QCOMPARE(reviewWidget->imagePath(), QString());
+}
+
+void UiTests::datasetPageLoadsCandidateSpectrogramForSelectedReviewRow()
+{
+    DatasetPage page;
+    page.resize(1280, 900);
+    page.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&page));
+    QCoreApplication::processEvents();
+
+    auto *table = page.findChild<QTableWidget *>(QStringLiteral("DatasetSampleTable"));
+    auto *reviewWidget = page.findChild<SpectrogramReviewWidget *>(
+        QStringLiteral("DatasetSpectrogramReviewWidget"));
+    auto *pathLabel = page.findChild<QLabel *>(QStringLiteral("DatasetSpectrogramPathLabel"));
+    QVERIFY(table != nullptr);
+    QVERIFY(reviewWidget != nullptr);
+    QVERIFY(pathLabel != nullptr);
+
+    if (table->rowCount() == 0) {
+        QSKIP("No persisted dataset samples are available for local spectrogram selection verification.");
+    }
+
+    bool loadedImage = false;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        table->selectRow(row);
+        QCoreApplication::processEvents();
+        if (reviewWidget->hasImage() && QFileInfo::exists(reviewWidget->imagePath())) {
+            loadedImage = true;
+            break;
+        }
+    }
+
+    QVERIFY(loadedImage);
+    QVERIFY(pathLabel->text().contains(QDir::toNativeSeparators(reviewWidget->imagePath())));
 }
 
 void UiTests::datasetPageUsesStandardLabelSelector()
@@ -1174,6 +1565,716 @@ void UiTests::recognitionPageExposesModelAndSampleWorkflow()
     QVERIFY(!runButton->isEnabled());
 }
 
+void UiTests::recognitionPageRegistersExternalModelForReuse()
+{
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(AppState{}), qPrintable(stateStore.lastError()));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    QFile modelFile(modelPath);
+    QVERIFY(modelFile.open(QIODevice::WriteOnly));
+    modelFile.write("model");
+    modelFile.close();
+
+    RecognitionPage page;
+    page.setModelForRecognition(modelPath, QStringLiteral("external-delivery"));
+
+    auto *modelCombo = page.findChild<QComboBox *>(QStringLiteral("RecognitionModelCombo"));
+    QVERIFY(modelCombo != nullptr);
+    QVERIFY(page.hasUsableModel());
+    QCOMPARE(modelCombo->count(), 1);
+
+    const auto state = stateStore.load();
+    QVERIFY(state.has_value());
+    QCOMPARE(state->trainingRuns.size(), 1);
+    const TrainingRunRecord &run = state->trainingRuns.constFirst();
+    QCOMPARE(run.bestModelPath, modelPath);
+    QCOMPARE(run.datasetVersionId, QStringLiteral("external-delivery"));
+    QCOMPARE(run.state, QStringLiteral("已完成"));
+    QCOMPARE(run.modelMode, QStringLiteral("closed_set"));
+    QVERIFY(run.modelAvailable);
+}
+
+void UiTests::recognitionPageMarksBareExternalModelUnverified()
+{
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(AppState{}), qPrintable(stateStore.lastError()));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString modelPath = dir.filePath(QStringLiteral("bare_model.pth"));
+    QFile modelFile(modelPath);
+    QVERIFY(modelFile.open(QIODevice::WriteOnly));
+    modelFile.write("model");
+    modelFile.close();
+
+    RecognitionPage page;
+    page.setModelForRecognition(modelPath, QStringLiteral("external-delivery"));
+
+    const auto state = stateStore.load();
+    QVERIFY(state.has_value());
+    QCOMPARE(state->trainingRuns.size(), 1);
+    QCOMPARE(state->trainingRuns.constFirst().modelVerificationStatus,
+             QStringLiteral("unverified"));
+}
+
+void UiTests::recognitionPageForwardsSelectedSampleIndex()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString samplePath = dir.filePath(QStringLiteral("multi_window_sample.npz"));
+    const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
+    for (const QString &path : {modelPath, samplePath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+    QFile backend(backendPath);
+    QVERIFY(backend.open(QIODevice::WriteOnly | QIODevice::Text));
+    backend.write(R"PY(import json
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+sample_index = argument("--sample-index")
+print(json.dumps({"type": "started"}), flush=True)
+print(json.dumps({
+    "type": "completed",
+    "model_path": argument("--model"),
+    "sample_path": argument("--sample"),
+    "predicted_type": "fixture",
+    "predicted_individual": "window-" + sample_index,
+    "confidence": 99.0,
+    "top_candidates": [],
+    "device": "fixture",
+    "model_size": "fixture",
+    "feature_mode": "fixture"
+}), flush=True)
+)PY");
+    backend.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-001");
+    run.datasetVersionId = QStringLiteral("dataset-001");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    SampleRecord sample;
+    sample.sampleId = QStringLiteral("sample-001");
+    sample.sampleFilePath = samplePath;
+    sample.sampleIndex = 7;
+    state.samples.append(sample);
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    const QByteArray previousPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousBackend = qgetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    qputenv("AIRCRAFT_TRAINING_PYTHON", pythonPath.toLocal8Bit());
+    qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
+
+    RecognitionPage page;
+    auto *runButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunButton"));
+    auto *resultDetail = page.findChild<QLabel *>(QStringLiteral("RecognitionResultDetail"));
+    auto *exportButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionExportResultsButton"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(resultDetail != nullptr);
+    QVERIFY(exportButton != nullptr);
+    QVERIFY(runButton->isEnabled());
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("window-7")));
+    QVERIFY(exportButton->isEnabled());
+
+    if (previousPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousPython);
+    }
+    if (previousBackend.isEmpty()) {
+        qunsetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    } else {
+        qputenv("AIRCRAFT_RECOGNITION_BACKEND", previousBackend);
+    }
+}
+
+void UiTests::recognitionPageEnablesBatchAfterSelectingExternalSamples()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString samplePath = dir.filePath(QStringLiteral("external_sample.npz"));
+    for (const QString &path : {modelPath, samplePath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-batch-external");
+    run.datasetVersionId = QStringLiteral("external-model");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    RecognitionPage page;
+    auto *chooseBatchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseBatchSamplesButton"));
+    auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
+    QVERIFY(chooseBatchButton != nullptr);
+    QVERIFY(batchButton != nullptr);
+    QVERIFY(!batchButton->isEnabled());
+
+    selectFileInActiveDialog(samplePath);
+    QTest::mouseClick(chooseBatchButton, Qt::LeftButton);
+    QTRY_VERIFY(batchButton->isEnabled());
+}
+
+void UiTests::recognitionPageEnablesBatchAfterSelectingExternalSampleDirectory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString samplesDirectory = dir.filePath(QStringLiteral("batch_samples"));
+    QVERIFY(QDir().mkpath(samplesDirectory + QStringLiteral("/nested")));
+    for (const QString &path : {modelPath,
+                                samplesDirectory + QStringLiteral("/first.npz"),
+                                samplesDirectory + QStringLiteral("/nested/second.NPZ")}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-batch-directory");
+    run.datasetVersionId = QStringLiteral("external-model");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    RecognitionPage page;
+    auto *chooseDirectoryButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseBatchDirectoryButton"));
+    auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
+    auto *summary = page.findChild<QLabel *>(QStringLiteral("RecognitionBatchSampleSummary"));
+    QVERIFY(chooseDirectoryButton != nullptr);
+    QVERIFY(batchButton != nullptr);
+    QVERIFY(summary != nullptr);
+    QVERIFY(!batchButton->isEnabled());
+
+    selectDirectoryInActiveDialog(samplesDirectory);
+    QTest::mouseClick(chooseDirectoryButton, Qt::LeftButton);
+    QTRY_VERIFY(batchButton->isEnabled());
+    QTRY_VERIFY(summary->text().contains(QStringLiteral("2 个 NPZ 样本")));
+}
+
+void UiTests::recognitionPageFusesFolderWindowsAsOneCaptureSegment()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString samplesDirectory = dir.filePath(QStringLiteral("capture_segment"));
+    const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
+    QVERIFY(QDir().mkpath(samplesDirectory));
+    for (const QString &path : {modelPath,
+                                samplesDirectory + QStringLiteral("/window_1.npz"),
+                                samplesDirectory + QStringLiteral("/window_2.npz"),
+                                samplesDirectory + QStringLiteral("/window_3.npz")}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+    QFile backend(backendPath);
+    QVERIFY(backend.open(QIODevice::WriteOnly | QIODevice::Text));
+    backend.write(R"PY(import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+name = os.path.basename(argument("--sample"))
+if name == "window_3.npz":
+    predicted = "Air3s"
+    probabilities = [{"label": "Air3s", "probability": 0.99}, {"label": "Air3", "probability": 0.01}]
+else:
+    predicted = "Air3"
+    probabilities = [{"label": "Air3s", "probability": 0.49}, {"label": "Air3", "probability": 0.51}]
+
+print(json.dumps({"type": "started"}), flush=True)
+print(json.dumps({
+    "type": "completed",
+    "model_path": argument("--model"),
+    "sample_path": argument("--sample"),
+    "predicted_type": predicted,
+    "predicted_individual": predicted,
+    "confidence": 99.0 if predicted == "Air3s" else 51.0,
+    "class_probabilities": probabilities,
+    "top_candidates": [],
+    "device": "fixture",
+    "model_size": "fixture",
+    "feature_mode": "fixture"
+}), flush=True)
+)PY");
+    backend.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-segment-fusion");
+    run.datasetVersionId = QStringLiteral("external-model");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    const QByteArray previousPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousBackend = qgetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    qputenv("AIRCRAFT_TRAINING_PYTHON", pythonPath.toLocal8Bit());
+    qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
+
+    RecognitionPage page;
+    auto *chooseDirectoryButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseBatchDirectoryButton"));
+    auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
+    auto *segmentSummary = page.findChild<QLabel *>(QStringLiteral("RecognitionSegmentSummary"));
+    auto *resultTable = page.findChild<QTableWidget *>(QStringLiteral("RecognitionResultTable"));
+    QVERIFY(chooseDirectoryButton != nullptr);
+    QVERIFY(batchButton != nullptr);
+    QVERIFY(segmentSummary != nullptr);
+    QVERIFY(resultTable != nullptr);
+
+    selectDirectoryInActiveDialog(samplesDirectory);
+    QTest::mouseClick(chooseDirectoryButton, Qt::LeftButton);
+    QTRY_VERIFY(batchButton->isEnabled());
+    QTest::mouseClick(batchButton, Qt::LeftButton);
+    QTRY_COMPARE(resultTable->rowCount(), 3);
+    QTRY_VERIFY(segmentSummary->text().contains(QStringLiteral("段级结论：O4 · Air3s")));
+    QVERIFY(segmentSummary->text().contains(QStringLiteral("综合置信度：65.67%")));
+    QVERIFY(segmentSummary->text().contains(QStringLiteral("窗口一致性：1 / 3")));
+
+    if (previousPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousPython);
+    }
+    if (previousBackend.isEmpty()) {
+        qunsetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    } else {
+        qputenv("AIRCRAFT_RECOGNITION_BACKEND", previousBackend);
+    }
+}
+
+void UiTests::recognitionPageMapsDroneIndividualToProtocolType()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString samplePath = dir.filePath(QStringLiteral("air3s_sample.npz"));
+    const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
+    for (const QString &path : {modelPath, samplePath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+    QFile backend(backendPath);
+    QVERIFY(backend.open(QIODevice::WriteOnly | QIODevice::Text));
+    backend.write(R"PY(import json
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+print(json.dumps({"type": "started"}), flush=True)
+print(json.dumps({
+    "type": "completed",
+    "model_path": argument("--model"),
+    "sample_path": argument("--sample"),
+    "predicted_type": "Air3s",
+    "predicted_individual": "Air3s",
+    "confidence": 98.0,
+    "top_candidates": [],
+    "device": "fixture",
+    "model_size": "fixture",
+    "feature_mode": "fixture"
+}), flush=True)
+)PY");
+    backend.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-protocol-map");
+    run.datasetVersionId = QStringLiteral("dataset-001");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    SampleRecord sample;
+    sample.sampleId = QStringLiteral("sample-air3s");
+    sample.sampleFilePath = samplePath;
+    state.samples.append(sample);
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    const QByteArray previousPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousBackend = qgetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    qputenv("AIRCRAFT_TRAINING_PYTHON", pythonPath.toLocal8Bit());
+    qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
+
+    RecognitionPage page;
+    auto *runButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunButton"));
+    auto *resultTable = page.findChild<QTableWidget *>(QStringLiteral("RecognitionResultTable"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(resultTable != nullptr);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_COMPARE(resultTable->rowCount(), 1);
+    QCOMPARE(resultTable->item(0, 1)->text(), QStringLiteral("O4"));
+    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("Air3s"));
+
+    if (previousPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousPython);
+    }
+    if (previousBackend.isEmpty()) {
+        qunsetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    } else {
+        qputenv("AIRCRAFT_RECOGNITION_BACKEND", previousBackend);
+    }
+}
+
+void UiTests::recognitionPageBatchRecognizesAllDatasetSamples()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString firstSamplePath = dir.filePath(QStringLiteral("first_sample.npz"));
+    const QString secondSamplePath = dir.filePath(QStringLiteral("second_sample.npz"));
+    const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
+    for (const QString &path : {modelPath, firstSamplePath, secondSamplePath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+    QFile backend(backendPath);
+    QVERIFY(backend.open(QIODevice::WriteOnly | QIODevice::Text));
+    backend.write(R"PY(import json
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+sample_index = argument("--sample-index")
+print(json.dumps({"type": "started"}), flush=True)
+print(json.dumps({
+    "type": "completed",
+    "model_path": argument("--model"),
+    "sample_path": argument("--sample"),
+    "predicted_type": "fixture",
+    "predicted_individual": "window-" + sample_index,
+    "confidence": 90.0 + int(sample_index),
+    "top_candidates": [],
+    "device": "fixture",
+    "model_size": "fixture",
+    "feature_mode": "fixture"
+}), flush=True)
+)PY");
+    backend.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-batch");
+    run.datasetVersionId = QStringLiteral("dataset-batch");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    SampleRecord firstSample;
+    firstSample.sampleId = QStringLiteral("sample-001");
+    firstSample.sampleFilePath = firstSamplePath;
+    firstSample.sampleIndex = 3;
+    state.samples.append(firstSample);
+    SampleRecord secondSample;
+    secondSample.sampleId = QStringLiteral("sample-002");
+    secondSample.sampleFilePath = secondSamplePath;
+    secondSample.sampleIndex = 8;
+    state.samples.append(secondSample);
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    const QByteArray previousPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousBackend = qgetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    qputenv("AIRCRAFT_TRAINING_PYTHON", pythonPath.toLocal8Bit());
+    qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
+
+    RecognitionPage page;
+    auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
+    auto *resultDetail = page.findChild<QLabel *>(QStringLiteral("RecognitionResultDetail"));
+    auto *resultTable = page.findChild<QTableWidget *>(QStringLiteral("RecognitionResultTable"));
+    QVERIFY(batchButton != nullptr);
+    QVERIFY(resultDetail != nullptr);
+    QVERIFY(resultTable != nullptr);
+    QVERIFY(batchButton->isEnabled());
+    QTest::mouseClick(batchButton, Qt::LeftButton);
+    QTRY_COMPARE(resultTable->rowCount(), 2);
+    QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("批量识别完成：成功 2/2，失败 0")));
+    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("window-3"));
+    QCOMPARE(resultTable->item(1, 2)->text(), QStringLiteral("window-8"));
+
+    if (previousPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousPython);
+    }
+    if (previousBackend.isEmpty()) {
+        qunsetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    } else {
+        qputenv("AIRCRAFT_RECOGNITION_BACKEND", previousBackend);
+    }
+}
+
+void UiTests::recognitionPageBatchShowsProgressAndLocksInputs()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString firstSamplePath = dir.filePath(QStringLiteral("first_sample.npz"));
+    const QString secondSamplePath = dir.filePath(QStringLiteral("second_sample.npz"));
+    const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
+    for (const QString &path : {modelPath, firstSamplePath, secondSamplePath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+    QFile backend(backendPath);
+    QVERIFY(backend.open(QIODevice::WriteOnly | QIODevice::Text));
+    backend.write(R"PY(import json
+import sys
+import time
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+print(json.dumps({"type": "started"}), flush=True)
+time.sleep(0.35)
+print(json.dumps({
+    "type": "completed",
+    "model_path": argument("--model"),
+    "sample_path": argument("--sample"),
+    "predicted_type": "fixture",
+    "predicted_individual": "window-" + argument("--sample-index"),
+    "confidence": 91.0,
+    "top_candidates": [],
+    "device": "fixture",
+    "model_size": "fixture",
+    "feature_mode": "fixture"
+}), flush=True)
+)PY");
+    backend.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-progress");
+    run.datasetVersionId = QStringLiteral("dataset-progress");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    for (int index = 0; index < 2; ++index) {
+        SampleRecord sample;
+        sample.sampleId = QStringLiteral("sample-%1").arg(index);
+        sample.sampleFilePath = index == 0 ? firstSamplePath : secondSamplePath;
+        sample.sampleIndex = index;
+        state.samples.append(sample);
+    }
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    const QByteArray previousPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousBackend = qgetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    qputenv("AIRCRAFT_TRAINING_PYTHON", pythonPath.toLocal8Bit());
+    qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
+
+    RecognitionPage page;
+    auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
+    auto *refreshButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRefreshButton"));
+    auto *chooseModelButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseModelButton"));
+    auto *chooseSampleButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseSampleButton"));
+    auto *progress = page.findChild<QProgressBar *>(QStringLiteral("RecognitionBatchProgressBar"));
+    QVERIFY(batchButton != nullptr);
+    QVERIFY(refreshButton != nullptr);
+    QVERIFY(chooseModelButton != nullptr);
+    QVERIFY(chooseSampleButton != nullptr);
+    QVERIFY(progress != nullptr);
+
+    QTest::mouseClick(batchButton, Qt::LeftButton);
+    QTRY_COMPARE(progress->maximum(), 2);
+    QVERIFY(!batchButton->isEnabled());
+    QVERIFY(!refreshButton->isEnabled());
+    QVERIFY(!chooseModelButton->isEnabled());
+    QVERIFY(!chooseSampleButton->isEnabled());
+    QTRY_COMPARE(progress->value(), 2);
+    QTRY_VERIFY(batchButton->isEnabled());
+
+    if (previousPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousPython);
+    }
+    if (previousBackend.isEmpty()) {
+        qunsetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    } else {
+        qputenv("AIRCRAFT_RECOGNITION_BACKEND", previousBackend);
+    }
+}
+
+void UiTests::recognitionPageRetriesFailedBatchSamples()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString failedSamplePath = dir.filePath(QStringLiteral("failed_sample.npz"));
+    const QString successfulSamplePath = dir.filePath(QStringLiteral("successful_sample.npz"));
+    const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
+    for (const QString &path : {modelPath, failedSamplePath, successfulSamplePath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+    QFile backend(backendPath);
+    QVERIFY(backend.open(QIODevice::WriteOnly | QIODevice::Text));
+    backend.write(R"PY(import json
+import os
+import sys
+
+def argument(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+sample_index = argument("--sample-index")
+retry_marker = os.path.join(os.path.dirname(__file__), "retry-marker")
+print(json.dumps({"type": "started"}), flush=True)
+if sample_index == "3" and not os.path.exists(retry_marker):
+    open(retry_marker, "w").close()
+    print(json.dumps({"type": "failed", "error": "temporary fixture failure"}), flush=True)
+    sys.exit(1)
+print(json.dumps({
+    "type": "completed",
+    "model_path": argument("--model"),
+    "sample_path": argument("--sample"),
+    "predicted_type": "fixture",
+    "predicted_individual": "window-" + sample_index,
+    "confidence": 92.0,
+    "top_candidates": [],
+    "device": "fixture",
+    "model_size": "fixture",
+    "feature_mode": "fixture"
+}), flush=True)
+)PY");
+    backend.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-retry");
+    run.datasetVersionId = QStringLiteral("dataset-retry");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    SampleRecord failedSample;
+    failedSample.sampleId = QStringLiteral("sample-failed");
+    failedSample.sampleFilePath = failedSamplePath;
+    failedSample.sampleIndex = 3;
+    state.samples.append(failedSample);
+    SampleRecord successfulSample;
+    successfulSample.sampleId = QStringLiteral("sample-success");
+    successfulSample.sampleFilePath = successfulSamplePath;
+    successfulSample.sampleIndex = 8;
+    state.samples.append(successfulSample);
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    const QByteArray previousPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousBackend = qgetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    qputenv("AIRCRAFT_TRAINING_PYTHON", pythonPath.toLocal8Bit());
+    qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
+
+    RecognitionPage page;
+    auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
+    auto *retryButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRetryFailedButton"));
+    auto *resultDetail = page.findChild<QLabel *>(QStringLiteral("RecognitionResultDetail"));
+    auto *resultTable = page.findChild<QTableWidget *>(QStringLiteral("RecognitionResultTable"));
+    QVERIFY(batchButton != nullptr);
+    QVERIFY(retryButton != nullptr);
+    QVERIFY(resultDetail != nullptr);
+    QVERIFY(resultTable != nullptr);
+
+    QTest::mouseClick(batchButton, Qt::LeftButton);
+    QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("失败 1")));
+    QVERIFY(retryButton->isEnabled());
+    QTest::mouseClick(retryButton, Qt::LeftButton);
+    QTRY_COMPARE(resultTable->rowCount(), 1);
+    QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("批量识别完成：成功 1/1，失败 0")));
+    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("window-3"));
+    QVERIFY(!retryButton->isEnabled());
+
+    if (previousPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousPython);
+    }
+    if (previousBackend.isEmpty()) {
+        qunsetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    } else {
+        qputenv("AIRCRAFT_RECOGNITION_BACKEND", previousBackend);
+    }
+}
+
 void UiTests::capturePageDiscoversDevicesAndRunsCapture()
 {
     auto service = std::make_unique<FakeUsrpDeviceService>();
@@ -1193,6 +2294,7 @@ void UiTests::capturePageDiscoversDevicesAndRunsCapture()
     QVERIFY(deviceTable != nullptr);
     QVERIFY(durationCombo != nullptr);
     QVERIFY(logOutput != nullptr);
+    deviceTypeCombo->setCurrentText(QStringLiteral("USRP B210"));
     QCOMPARE(deviceTypeCombo->currentText(), QStringLiteral("USRP B210"));
 
     QTest::mouseClick(discoverButton, Qt::LeftButton);
@@ -1207,6 +2309,80 @@ void UiTests::capturePageDiscoversDevicesAndRunsCapture()
     QVERIFY(logOutput->toPlainText().contains(QStringLiteral("capture complete")));
     QCOMPARE(servicePtr->lastConfig.durationSeconds, 0.1);
     QVERIFY(servicePtr->lastConfig.outputFilePath.endsWith(QStringLiteral(".cap")));
+}
+
+void UiTests::mainWindowShowsNextActionInWorkflowBanner()
+{
+    MainWindow window;
+    auto *nextAction = window.findChild<QLabel *>(QStringLiteral("WorkflowNextActionLabel"));
+    QVERIFY(nextAction != nullptr);
+    QVERIFY(nextAction->text().contains(QStringLiteral("下一步")));
+}
+
+void UiTests::datasetPageShowsReviewQueueAndKeyboardActions()
+{
+    DatasetPage page;
+    auto *queueLabel = page.findChild<QLabel *>(QStringLiteral("DatasetReviewQueueLabel"));
+    QVERIFY(queueLabel != nullptr);
+    QVERIFY(queueLabel->text().contains(QStringLiteral("待复核")));
+    QVERIFY(page.findChild<QShortcut *>(QStringLiteral("DatasetApproveShortcut")) != nullptr);
+    QVERIFY(page.findChild<QShortcut *>(QStringLiteral("DatasetRejectShortcut")) != nullptr);
+    QVERIFY(page.findChild<QShortcut *>(QStringLiteral("DatasetPendingShortcut")) != nullptr);
+}
+
+void UiTests::recognitionPageShowsResultProvenance()
+{
+    RecognitionPage page;
+    auto *provenance = page.findChild<QLabel *>(QStringLiteral("RecognitionProvenanceLabel"));
+    QVERIFY(provenance != nullptr);
+    QVERIFY(provenance->text().contains(QStringLiteral("模型来源")));
+}
+
+void UiTests::capturePageShowsPersistent3943BReadiness()
+{
+    CapturePage page;
+    auto *readiness = page.findChild<QLabel *>(QStringLiteral("CeyearReadinessLabel"));
+    QVERIFY(readiness != nullptr);
+    QVERIFY(readiness->text().contains(QStringLiteral("3943B")));
+    QVERIFY(readiness->text().contains(QStringLiteral("未查询")));
+}
+
+void UiTests::capturePageExposesCopyDiagnosticsAction()
+{
+    CapturePage page;
+    QVERIFY(page.findChild<QPushButton *>(QStringLiteral("CopyCaptureDiagnosticsButton")) != nullptr);
+}
+
+void UiTests::capturePageUses3943BOnlyHardwareUi()
+{
+    CapturePage page(std::make_unique<FakeUsrpDeviceService>());
+
+    auto *deviceTypeCombo = page.findChild<QComboBox *>(QStringLiteral("CaptureDeviceTypeCombo"));
+    auto *sourceButton = page.findChild<QPushButton *>(QStringLiteral("Device3943BSourceButton"));
+    auto *captureButton = page.findChild<QPushButton *>(QStringLiteral("StartUsrpCaptureButton"));
+    auto *parameterStack = page.findChild<QStackedWidget *>(QStringLiteral("CaptureParameterStack"));
+    auto *ceyearPanel = page.findChild<QWidget *>(QStringLiteral("CeyearControlPanel"));
+
+    QVERIFY(deviceTypeCombo != nullptr);
+    QVERIFY(sourceButton != nullptr);
+    QVERIFY(captureButton != nullptr);
+    QVERIFY(parameterStack != nullptr);
+    QVERIFY(ceyearPanel != nullptr);
+    QVERIFY(page.findChild<QPushButton *>(QStringLiteral("UsrpSourceButton")) == nullptr);
+    QVERIFY(deviceTypeCombo->currentText().startsWith(QStringLiteral("3943B")));
+    QCOMPARE(captureButton->text(), QStringLiteral("开始 3943B IQ 采集"));
+    QCOMPARE(parameterStack->currentWidget(), ceyearPanel);
+}
+
+void UiTests::capturePageOmitsBehaviorTaggingControls()
+{
+    CapturePage page;
+
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("CaptureBehaviorGroup")) == nullptr);
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("CaptureDroneIdEdit")) == nullptr);
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("CaptureModelEdit")) == nullptr);
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("CaptureCurrentBehaviorLabel")) == nullptr);
+    QVERIFY(page.findChild<QObject *>(QStringLiteral("CaptureBehaviorButton_TAKEOFF")) == nullptr);
 }
 
 void UiTests::capturePageSwitchesDeviceTypesAndPassesUsrpParameters()
@@ -1250,7 +2426,7 @@ void UiTests::capturePageSwitchesDeviceTypesAndPassesUsrpParameters()
     QVERIFY(discoverButton->isEnabled());
     QVERIFY(captureButton->isEnabled());
     QVERIFY(captureButton->text().contains(QStringLiteral("3943B IQ")));
-    QCOMPARE(deviceConfigStack->currentIndex(), 1);
+    QCOMPARE(deviceConfigStack->currentIndex(), 0);
     QVERIFY(logOutput->toPlainText().contains(QStringLiteral("3943B")));
 
     deviceTypeCombo->setCurrentText(QStringLiteral("USRP B210"));
@@ -1286,7 +2462,7 @@ void UiTests::capturePageUsesConsoleLayoutForInstrumentControls()
 {
     CapturePage page(std::make_unique<FakeUsrpDeviceService>());
 
-    QVERIFY(page.findChild<QPushButton *>(QStringLiteral("UsrpSourceButton")) != nullptr);
+    QVERIFY(page.findChild<QPushButton *>(QStringLiteral("UsrpSourceButton")) == nullptr);
     QVERIFY(page.findChild<QPushButton *>(QStringLiteral("Device3943BSourceButton")) != nullptr);
     QVERIFY(page.findChild<QGroupBox *>(QStringLiteral("CaptureDeviceColumn")) != nullptr);
     QVERIFY(page.findChild<QGroupBox *>(QStringLiteral("CaptureParametersColumn")) != nullptr);
@@ -1317,12 +2493,7 @@ void UiTests::capturePageUsesDeviceSpecificParameterPanels()
     QVERIFY(captureButton != nullptr);
     QVERIFY(page.findChild<QPushButton *>(QStringLiteral("ApplyCeyearControlButton")) == nullptr);
 
-    QCOMPARE(parameterStack->currentWidget(), usrpPanel);
-    QVERIFY(usrpBasicPanel->isVisibleTo(parameterStack));
-
-    deviceTypeCombo->setCurrentIndex(1);
     QCOMPARE(parameterStack->currentWidget(), ceyearPanel);
-    QVERIFY(!usrpBasicPanel->isVisibleTo(parameterStack));
     QVERIFY(captureButton->isEnabled());
     QCOMPARE(captureButton->text(), QStringLiteral("开始 3943B IQ 采集"));
 }
@@ -1346,13 +2517,9 @@ void UiTests::capturePageSeparatesBasicAdvancedParamsAndResultTabs()
     QVERIFY(resultsTabs != nullptr);
     QVERIFY(editableHint->text().contains(QStringLiteral("直接输入")));
     QVERIFY(!advancedPanel->isVisible());
-    QCOMPARE(resultsTabs->count(), 3);
-    QCOMPARE(resultsTabs->tabText(0), QStringLiteral("设备列表"));
-    QCOMPARE(resultsTabs->tabText(1), QStringLiteral("采集记录"));
-    QCOMPARE(resultsTabs->tabText(2), QStringLiteral("3943B 状态"));
-
-    QTest::mouseClick(advancedToggle, Qt::LeftButton);
-    QVERIFY(advancedPanel->isVisible());
+    QCOMPARE(resultsTabs->count(), 2);
+    QCOMPARE(resultsTabs->tabText(0), QStringLiteral("采集记录"));
+    QCOMPARE(resultsTabs->tabText(1), QStringLiteral("3943B 状态"));
 }
 
 void UiTests::capturePageUsesThreeColumnWorkbenchLayout()
@@ -1380,35 +2547,91 @@ void UiTests::capturePageUsesPageLevelVerticalScrolling()
     QVERIFY(scrollArea->widgetResizable());
 }
 
-void UiTests::capturePageUsesColumnScrollContainersAtMinimumSize()
+void UiTests::signalCleaningPageExposesIndependentWindowWorkflow()
+{
+    SignalCleaningPage page;
+
+    auto *title = page.findChild<QLabel *>(QStringLiteral("PageTitle"));
+    auto *startButton = page.findChild<QPushButton *>(QStringLiteral("StartSignalCleaningButton"));
+    auto *inputRoot = page.findChild<QLineEdit *>(QStringLiteral("SignalCleaningInputRootEdit"));
+    auto *threshold = page.findChild<QLineEdit *>(QStringLiteral("SignalCleaningThresholdEdit"));
+    auto *predictionTable = page.findChild<QTableWidget *>(QStringLiteral("SignalCleaningPredictionTable"));
+    auto *predictionFilter = page.findChild<QComboBox *>(QStringLiteral("SignalCleaningPredictionFilter"));
+    auto *spectrogram = page.findChild<QWidget *>(QStringLiteral("SignalCleaningSpectrogramWidget"));
+    auto *subtitle = page.findChild<QLabel *>(QStringLiteral("PageSubtitle"));
+
+    QVERIFY(title != nullptr);
+    QVERIFY(startButton != nullptr);
+    QVERIFY(inputRoot != nullptr);
+    QVERIFY(threshold != nullptr);
+    QVERIFY(predictionTable != nullptr);
+    QVERIFY(predictionFilter != nullptr);
+    QVERIFY(spectrogram != nullptr);
+    QVERIFY(subtitle != nullptr);
+    QCOMPARE(title->text(), QStringLiteral("信号清洗"));
+    QCOMPARE(startButton->text(), QStringLiteral("开始清洗"));
+    QCOMPARE(threshold->text(), QStringLiteral("0.50"));
+    QCOMPARE(predictionTable->columnCount(), 6);
+    QCOMPARE(predictionFilter->count(), 3);
+    QVERIFY(subtitle->text().contains(QStringLiteral("不依赖连续窗口或投票")));
+}
+
+void UiTests::workflowPagesSeparateAutomaticChecksFromManualReview()
+{
+    PreprocessPage preprocessPage;
+    auto *preprocessResults = preprocessPage.findChild<QGroupBox *>(QStringLiteral("PreprocessResultsPanel"));
+    auto *preprocessNext = preprocessPage.findChild<QPushButton *>(QStringLiteral("GoToDatasetButton"));
+    auto *sampleTable = preprocessPage.findChild<QTableWidget *>(QStringLiteral("PreprocessSampleTable"));
+
+    QVERIFY(preprocessResults != nullptr);
+    QVERIFY(preprocessNext != nullptr);
+    QVERIFY(sampleTable != nullptr);
+    QCOMPARE(preprocessResults->title(), QStringLiteral("4. 结果预览与质量检查"));
+    QCOMPARE(preprocessNext->text(), QStringLiteral("去数据集人工复核"));
+    QCOMPARE(sampleTable->horizontalHeaderItem(6)->text(), QStringLiteral("当前人工复核状态"));
+
+    SignalCleaningPage signalCleaningPage;
+    auto *cleaningSubtitle = signalCleaningPage.findChild<QLabel *>(QStringLiteral("PageSubtitle"));
+    auto *cleaningNext = signalCleaningPage.findChild<QPushButton *>(QStringLiteral("GoToDatasetAfterCleaningButton"));
+    auto *predictionTable = signalCleaningPage.findChild<QTableWidget *>(QStringLiteral("SignalCleaningPredictionTable"));
+
+    QVERIFY(cleaningSubtitle != nullptr);
+    QVERIFY(cleaningNext != nullptr);
+    QVERIFY(predictionTable != nullptr);
+    QVERIFY(cleaningSubtitle->text().contains(QStringLiteral("自动模型判定")));
+    QCOMPARE(cleaningNext->text(), QStringLiteral("去数据集人工复核"));
+    QCOMPARE(predictionTable->horizontalHeaderItem(0)->text(), QStringLiteral("模型建议"));
+
+    DatasetPage datasetPage;
+    auto *datasetSubtitle = datasetPage.findChild<QLabel *>(QStringLiteral("PageSubtitle"));
+    auto *reviewTitle = datasetPage.findChild<QLabel *>(QStringLiteral("DatasetReviewTitle"));
+
+    QVERIFY(datasetSubtitle != nullptr);
+    QVERIFY(reviewTitle != nullptr);
+    QVERIFY(datasetSubtitle->text().contains(QStringLiteral("唯一人工复核入口")));
+    QCOMPARE(reviewTitle->text(), QStringLiteral("人工复核与训练集管理"));
+}
+
+void UiTests::capturePageUsesSinglePageScrollAtMinimumSize()
 {
     CapturePage page(std::make_unique<FakeUsrpDeviceService>());
     page.resize(1100, 720);
     page.show();
     QVERIFY(QTest::qWaitForWindowExposed(&page));
 
-    auto *deviceScroll = page.findChild<QScrollArea *>(QStringLiteral("CaptureDeviceColumnScroll"));
-    auto *parametersScroll = page.findChild<QScrollArea *>(QStringLiteral("CaptureParametersColumnScroll"));
-    auto *runScroll = page.findChild<QScrollArea *>(QStringLiteral("CaptureRunColumnScroll"));
-    QVERIFY(deviceScroll != nullptr);
-    QVERIFY(parametersScroll != nullptr);
-    QVERIFY(runScroll != nullptr);
-    QCOMPARE(deviceScroll->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
-    QCOMPARE(parametersScroll->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
-    QCOMPARE(runScroll->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
-    QCOMPARE(deviceScroll->verticalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
-    QCOMPARE(parametersScroll->verticalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
-    QCOMPARE(runScroll->verticalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
-    QVERIFY(deviceScroll->widgetResizable());
-    QVERIFY(parametersScroll->widgetResizable());
-    QVERIFY(runScroll->widgetResizable());
+    auto *pageScroll = page.findChild<QScrollArea *>(QStringLiteral("WorkflowPageScrollArea"));
+    QVERIFY(pageScroll != nullptr);
+    QCOMPARE(page.findChildren<QScrollArea *>().size(), 1);
+    QVERIFY(page.findChild<QScrollArea *>(QStringLiteral("CaptureDeviceColumnScroll")) == nullptr);
+    QVERIFY(page.findChild<QScrollArea *>(QStringLiteral("CaptureParametersColumnScroll")) == nullptr);
+    QVERIFY(page.findChild<QScrollArea *>(QStringLiteral("CaptureRunColumnScroll")) == nullptr);
 
     auto *sourceButton = page.findChild<QPushButton *>(QStringLiteral("Device3943BSourceButton"));
     auto *deviceConfigStack = page.findChild<QStackedWidget *>(QStringLiteral("DeviceConfigStack"));
     QVERIFY(sourceButton != nullptr);
     QVERIFY(deviceConfigStack != nullptr);
     QTest::mouseClick(sourceButton, Qt::LeftButton);
-    QCOMPARE(deviceConfigStack->currentIndex(), 1);
+    QCOMPARE(deviceConfigStack->currentIndex(), 0);
 
     auto *visaEdit = page.findChild<QLineEdit *>(QStringLiteral("CeyearVisaResourceEdit"));
     auto *frequencyEdit = page.findChild<QLineEdit *>(QStringLiteral("CeyearCenterFrequencyEdit"));
@@ -1423,6 +2646,44 @@ void UiTests::capturePageUsesColumnScrollContainersAtMinimumSize()
     QVERIFY(visaEdit->height() >= 30);
     QVERIFY(frequencyEdit->height() >= 30);
     QVERIFY(spanEdit->height() >= 30);
+}
+
+void UiTests::preprocessPageExplainsTermsAndModes()
+{
+    PreprocessPage page;
+    auto *terminology = page.findChild<QLabel *>(QStringLiteral("PreprocessTerminologyLabel"));
+    auto *modeLabel = page.findChild<QLabel *>(QStringLiteral("PreprocessParameterModeLabel"));
+    auto *advancedHelp = page.findChild<QLabel *>(QStringLiteral("PreprocessAdvancedParametersHelp"));
+    auto *advancedToggle = page.findChild<QPushButton *>(QStringLiteral("PreprocessAdvancedParametersToggle"));
+    QVERIFY(terminology != nullptr);
+    QVERIFY(modeLabel != nullptr);
+    QVERIFY(advancedHelp != nullptr);
+    QVERIFY(advancedToggle != nullptr);
+    QVERIFY(terminology->text().contains(QStringLiteral("IQRAW")));
+    QVERIFY(terminology->text().contains(QStringLiteral("NPZ")));
+    QVERIFY(terminology->text().contains(QStringLiteral("UHD")));
+    QVERIFY(terminology->text().contains(QStringLiteral("VISA")));
+    QVERIFY(terminology->text().contains(QStringLiteral("STFT")));
+    QVERIFY(terminology->text().contains(QStringLiteral("nperseg")));
+    QVERIFY(modeLabel->text().contains(QStringLiteral("推荐模式")));
+    QVERIFY(advancedHelp->text().contains(QStringLiteral("4096")));
+    QVERIFY(advancedHelp->text().contains(QStringLiteral("16 到 262144")));
+    QCOMPARE(advancedToggle->text(), QStringLiteral("切换到专家模式"));
+}
+
+void UiTests::capturePageExplainsTermsAndModes()
+{
+    CapturePage page(std::make_unique<FakeUsrpDeviceService>());
+    auto *hint = page.findChild<QLabel *>(QStringLiteral("UsrpEditableParametersHint"));
+    auto *modeLabel = page.findChild<QLabel *>(QStringLiteral("UsrpParameterModeLabel"));
+    auto *advancedToggle = page.findChild<QPushButton *>(QStringLiteral("UsrpAdvancedParametersToggle"));
+    QVERIFY(hint != nullptr);
+    QVERIFY(modeLabel != nullptr);
+    QVERIFY(advancedToggle != nullptr);
+    QVERIFY(hint->text().contains(QStringLiteral("UHD")));
+    QVERIFY(hint->text().contains(QStringLiteral("CAP")));
+    QVERIFY(modeLabel->text().contains(QStringLiteral("推荐模式")));
+    QCOMPARE(advancedToggle->text(), QStringLiteral("切换到专家模式"));
 }
 
 void UiTests::capturePageKeepsResultsTabsReadableAtMinimumSize()
@@ -1464,6 +2725,7 @@ void UiTests::capturePageRejectsInvalidUsrpParameters()
     QVERIFY(sampleRateCombo != nullptr);
     QVERIFY(validationMessage != nullptr);
 
+    page.findChild<QComboBox *>(QStringLiteral("CaptureDeviceTypeCombo"))->setCurrentText(QStringLiteral("USRP B210"));
     QTest::mouseClick(discoverButton, Qt::LeftButton);
     sampleRateCombo->setCurrentText(QStringLiteral("abc"));
     QTest::mouseClick(captureButton, Qt::LeftButton);
@@ -1488,6 +2750,7 @@ void UiTests::capturePageRunsCaptureWithoutBlockingUi()
     QVERIFY(taskLabel != nullptr);
     QVERIFY(logOutput != nullptr);
 
+    page.findChild<QComboBox *>(QStringLiteral("CaptureDeviceTypeCombo"))->setCurrentText(QStringLiteral("USRP B210"));
     QTest::mouseClick(discoverButton, Qt::LeftButton);
     QTest::mouseClick(captureButton, Qt::LeftButton);
 
@@ -1557,7 +2820,7 @@ void UiTests::capturePageDoesNotExposeSeparate3943BControlWrite()
     QVERIFY(statusTable != nullptr);
     QVERIFY(page.findChild<QPushButton *>(QStringLiteral("ApplyCeyearControlButton")) == nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     centerFreqEdit->setText(QStringLiteral("109000000"));
     spanEdit->setText(QStringLiteral("20000000"));
     QCOMPARE(demodCombo->currentText(), QStringLiteral("IQ"));
@@ -1602,7 +2865,7 @@ void UiTests::capturePageDefaults3943BToVerifiedManualIqPath()
     QVERIFY(continuousCheck != nullptr);
     QCOMPARE(stopButtons.size(), 1);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
 
     QCOMPARE(resourceEdit->text(), QStringLiteral("TCPIP::192.168.50.54::5025::SOCKET"));
     QCOMPARE(centerFreqEdit->text(), QStringLiteral("2400000000"));
@@ -1651,10 +2914,35 @@ void UiTests::capturePageExposes3943BPointCountOnly()
     QVERIFY(page.findChild<QLineEdit *>(QStringLiteral("CeyearMeasureTimeEdit")) == nullptr);
     QVERIFY(page.findChild<QLineEdit *>(QStringLiteral("CeyearCaptureDurationEdit")) == nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     QCOMPARE(iqPointsEdit->text(), QStringLiteral("4096"));
 }
 
+void UiTests::capturePageConfirmsContinuous3943BBeforeStarting()
+{
+    auto ceyearService = std::make_unique<FakeCeyearVisaService>();
+    auto *ceyearServicePtr = ceyearService.get();
+    CapturePage page(std::make_unique<FakeUsrpDeviceService>(), std::move(ceyearService));
+
+    auto *deviceTypeCombo = page.findChild<QComboBox *>(QStringLiteral("CaptureDeviceTypeCombo"));
+    auto *captureButton = page.findChild<QPushButton *>(QStringLiteral("StartUsrpCaptureButton"));
+    auto *continuousCheck = page.findChild<QCheckBox *>(QStringLiteral("CeyearContinuousCaptureCheck"));
+    auto *logOutput = page.findChild<QPlainTextEdit *>(QStringLiteral("UsrpCaptureLog"));
+
+    QVERIFY(deviceTypeCombo != nullptr);
+    QVERIFY(captureButton != nullptr);
+    QVERIFY(continuousCheck != nullptr);
+    QVERIFY(logOutput != nullptr);
+
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
+    continuousCheck->setChecked(true);
+    clickActiveMessageBoxButton(QStringLiteral("取消"));
+    QTest::mouseClick(captureButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(ceyearServicePtr->triggerIqReportCount, 0);
+    QVERIFY(logOutput->toPlainText().contains(QStringLiteral("已取消 3943B 连续采集，未触发仪器。")));
+}
 void UiTests::capturePageContinuous3943BCaptureSchedulesNextFile()
 {
     auto ceyearService = std::make_unique<FakeCeyearVisaService>();
@@ -1677,10 +2965,11 @@ void UiTests::capturePageContinuous3943BCaptureSchedulesNextFile()
     QVERIFY(captureTable != nullptr);
     QVERIFY(logOutput != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     iqPointsEdit->setText(QStringLiteral("2048"));
     continuousCheck->setChecked(true);
 
+    clickActiveMessageBoxButton(QStringLiteral("开始连续采集"));
     QTest::mouseClick(captureButton, Qt::LeftButton);
     QVERIFY(QTest::qWaitFor([&]() {
         return ceyearServicePtr->triggerIqReportCount >= 1 && captureTable->rowCount() >= 1;
@@ -1690,7 +2979,7 @@ void UiTests::capturePageContinuous3943BCaptureSchedulesNextFile()
     QVERIFY(stopButton->isEnabled());
     QVERIFY(logOutput->toPlainText().contains(QStringLiteral("3943B 连续采集已启动")));
     QVERIFY(logOutput->toPlainText().contains(QStringLiteral("3943B 连续采集第 1 轮开始")));
-    QVERIFY(logOutput->toPlainText().contains(QStringLiteral("立即启动第 2 轮")));
+    QVERIFY(logOutput->toPlainText().contains(QStringLiteral("等待设备恢复 1000 ms 后启动第 2 轮")));
     QCOMPARE(ceyearServicePtr->lastCapture.measurementTimeSeconds, 0.0);
     QCOMPARE(ceyearServicePtr->lastCapture.pcReceiveTimeoutMs, 0);
     QCOMPARE(ceyearServicePtr->lastCapture.iqPointCount, 2048);
@@ -1721,10 +3010,11 @@ void UiTests::capturePageContinuousCaptureStartsNextRoundImmediately()
     QVERIFY(iqPointsEdit != nullptr);
     QVERIFY(captureTable != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     iqPointsEdit->setText(QStringLiteral("8192"));
     continuousCheck->setChecked(true);
 
+    clickActiveMessageBoxButton(QStringLiteral("开始连续采集"));
     QTest::mouseClick(captureButton, Qt::LeftButton);
     QVERIFY(QTest::qWaitFor([&]() {
         return ceyearServicePtr->triggerIqReportCount >= 2 && captureTable->rowCount() >= 2;
@@ -1785,7 +3075,7 @@ void UiTests::capturePageConfigures3943BPathFromMainButton()
     QVERIFY(captureTable != nullptr);
     QVERIFY(logOutput != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     QCOMPARE(measureModeCombo->currentText(), QStringLiteral("FIX"));
     QCOMPARE(iqPointsEdit->text(), QStringLiteral("4096"));
     iqPointsEdit->setText(QStringLiteral("2048"));
@@ -1849,7 +3139,7 @@ void UiTests::capturePageIgnoresSecond3943BStartWhileBusy()
     QVERIFY(captureButton != nullptr);
     QVERIFY(captureTable != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     QVERIFY(captureButton->isEnabled());
 
     QTest::mouseClick(captureButton, Qt::LeftButton);
@@ -1879,7 +3169,7 @@ void UiTests::capturePageCanRun3943BCaptureTwice()
     QVERIFY(captureButton != nullptr);
     QVERIFY(captureTable != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     QVERIFY(captureButton->isEnabled());
     QTest::mouseClick(captureButton, Qt::LeftButton);
     QVERIFY(QTest::qWaitFor([&]() {
@@ -1910,7 +3200,7 @@ void UiTests::capturePagePasses3943BReportPathSeparatelyFromPcProtocol()
     QVERIFY(reportPathCombo != nullptr);
     QVERIFY(pcProtocolCombo != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     reportPathCombo->setCurrentText(QStringLiteral("TCP"));
     pcProtocolCombo->setCurrentText(QStringLiteral("UDP"));
 
@@ -1944,7 +3234,7 @@ void UiTests::capturePageStops3943BRecording()
     QVERIFY(statusTable != nullptr);
     QVERIFY(logOutput != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     QVERIFY(stopButton->isEnabled());
     QCOMPARE(stopButton->text(), QStringLiteral("停止 3943B 采集"));
 
@@ -1973,7 +3263,7 @@ void UiTests::capturePageKeeps3943BStopEnabledDuringBusyState()
     QVERIFY(startButton != nullptr);
     QVERIFY(stopButton != nullptr);
 
-    deviceTypeCombo->setCurrentIndex(1);
+    deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     QCOMPARE(stopButton->isEnabled(), true);
     QCOMPARE(stopButton->text(), QStringLiteral("停止 3943B 采集"));
 
@@ -2035,6 +3325,107 @@ void UiTests::mainWindowPassesSweepFrequencyToCapturePage()
     QCOMPARE(stack->currentIndex(), 1);
     QCOMPARE(centerFreqEdit->text(), QStringLiteral("901000000"));
     QCOMPARE(deviceTypeCombo->currentText(), QStringLiteral("3943B（预留）"));
+}
+
+void UiTests::mainWindowReflectsCompletedSweepAndCapture()
+{
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(AppState{}), qPrintable(stateStore.lastError()));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString capturePath = dir.filePath(QStringLiteral("capture.iqraw"));
+    QFile captureFile(capturePath);
+    QVERIFY(captureFile.open(QIODevice::WriteOnly));
+    captureFile.write("iqraw");
+    captureFile.close();
+
+    MainWindow window(std::make_unique<FakeCeyearVisaService>(),
+                      std::make_unique<FakeUsrpDeviceService>(),
+                      std::make_unique<FakeCeyearVisaService>());
+    auto *navigator = window.findChild<StepNavigator *>(QStringLiteral("StepNavigator"));
+    auto *sweepPage = window.findChild<SweepPage *>();
+    auto *capturePage = window.findChild<CapturePage *>();
+    QVERIFY(navigator != nullptr);
+    QVERIFY(sweepPage != nullptr);
+    QVERIFY(capturePage != nullptr);
+
+    emit sweepPage->frequencyConfirmed(901000000.0);
+    QCOMPARE(navigator->stepState(0), WorkflowStepState::Completed);
+
+    emit capturePage->captureFileReady(capturePath);
+    QCOMPARE(navigator->stepState(1), WorkflowStepState::Completed);
+}
+
+void UiTests::mainWindowKeepsRecognitionReadyUntilRecognitionSucceeds()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    QFile modelFile(modelPath);
+    QVERIFY(modelFile.open(QIODevice::WriteOnly));
+    modelFile.write("model");
+    modelFile.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-001");
+    run.datasetVersionId = QStringLiteral("dataset-001");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    MainWindow window(std::make_unique<FakeCeyearVisaService>(),
+                      std::make_unique<FakeUsrpDeviceService>(),
+                      std::make_unique<FakeCeyearVisaService>());
+    auto *navigator = window.findChild<StepNavigator *>(QStringLiteral("StepNavigator"));
+    QVERIFY(navigator != nullptr);
+    QCOMPARE(navigator->stepState(6), WorkflowStepState::Ready);
+}
+
+void UiTests::mainWindowResetsRecognitionCompletionWhenModelChanges()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString firstModelPath = dir.filePath(QStringLiteral("first_model.pth"));
+    const QString secondModelPath = dir.filePath(QStringLiteral("second_model.pth"));
+    for (const QString &path : {firstModelPath, secondModelPath}) {
+        QFile modelFile(path);
+        QVERIFY(modelFile.open(QIODevice::WriteOnly));
+        modelFile.write("model");
+    }
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-001");
+    run.datasetVersionId = QStringLiteral("dataset-001");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = firstModelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    MainWindow window(std::make_unique<FakeCeyearVisaService>(),
+                      std::make_unique<FakeUsrpDeviceService>(),
+                      std::make_unique<FakeCeyearVisaService>());
+    auto *navigator = window.findChild<StepNavigator *>(QStringLiteral("StepNavigator"));
+    auto *recognitionPage = window.findChild<RecognitionPage *>();
+    QVERIFY(navigator != nullptr);
+    QVERIFY(recognitionPage != nullptr);
+
+    emit recognitionPage->recognitionCompleted();
+    QCOMPARE(navigator->stepState(6), WorkflowStepState::Completed);
+
+    recognitionPage->setModelForRecognition(secondModelPath, QStringLiteral("external-delivery"));
+    QCOMPARE(navigator->stepState(6), WorkflowStepState::Ready);
 }
 
 void UiTests::mainWindowShowsCaptureWorkbench()
