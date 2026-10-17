@@ -878,7 +878,9 @@ void SweepPage::showWidebandAlert(const PscWidebandAlert &alert)
 
 void SweepPage::recordWidebandAlert(const PscWidebandAlert &alert)
 {
-    constexpr double matchingCenterToleranceHz = 25000.0;
+    const double matchingCenterToleranceHz = alert.centerToleranceHz >= 25000.0
+        ? alert.centerToleranceHz
+        : 25000.0;
     for (PscWidebandAlert &recordedAlert : m_widebandAlertHistory) {
         if (qAbs(recordedAlert.centerHz - alert.centerHz) <= matchingCenterToleranceHz) {
             recordedAlert = alert;

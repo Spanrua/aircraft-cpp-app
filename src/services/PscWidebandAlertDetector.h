@@ -12,6 +12,7 @@ struct PscWidebandAlert
     double bandwidthHz = 0.0;
     double peakLevelDbuv = 0.0;
     int consecutiveFrameCount = 0;
+    double centerToleranceHz = 25000.0;
 };
 
 class PscWidebandAlertDetector

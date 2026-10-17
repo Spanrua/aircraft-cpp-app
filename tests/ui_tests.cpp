@@ -421,6 +421,7 @@ private slots:
     void sweepPageShowsPscStartFailure();
     void sweepPageUpdatesWaterfallAndCandidatesFromPscFrame();
     void sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity();
+    void sweepPageMergesDriftingWidebandAlertHistory();
     void sweepPageResetClearsWidebandAlert();
     void sweepPageClearsWaterfallWhenStartingNewSweep();
     void sweepPageSavesPscFramesToCsv();
@@ -1060,6 +1061,36 @@ void UiTests::sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity()
         }
     }
     QVERIFY(foundAlert);
+}
+
+void UiTests::sweepPageMergesDriftingWidebandAlertHistory()
+{
+    SweepPage page;
+    auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+    QVERIFY(candidateTable != nullptr);
+
+    const auto widebandFrame = [](double startHz) {
+        CeyearPscFrame frame;
+        for (int index = 0; index <= 20; ++index) {
+            frame.bins.append({startHz + index * 1000000.0, -35.0});
+        }
+        return frame;
+    };
+
+    const CeyearPscFrame initialFrame = widebandFrame(2400000000.0);
+    page.appendPscFrameForTest(initialFrame);
+    page.appendPscFrameForTest(initialFrame);
+    page.appendPscFrameForTest(widebandFrame(2401500000.0));
+
+    int alertRows = 0;
+    for (int row = 0; row < candidateTable->rowCount(); ++row) {
+        const QTableWidgetItem *stateItem = candidateTable->item(row, 4);
+        if (stateItem && stateItem->text() == QStringLiteral("告警")) {
+            ++alertRows;
+            QCOMPARE(candidateTable->item(row, 2)->text(), QStringLiteral("3"));
+        }
+    }
+    QCOMPARE(alertRows, 1);
 }
 
 void UiTests::sweepPageResetClearsWidebandAlert()
