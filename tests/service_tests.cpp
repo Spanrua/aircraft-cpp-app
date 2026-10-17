@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 class ServiceTests : public QObject
@@ -82,6 +83,10 @@ private slots:
     void pscWidebandAlertNeverConfirmsOnFirstFrameWhenConfiguredForOne();
     void pscWidebandAlertRejectsBandsBelowMinimumWidth();
     void pscWidebandAlertRejectsBandsAboveMaximumWidth();
+    void pscWidebandAlertAcceptsExactBandwidthBounds();
+    void pscWidebandAlertUsesConfiguredHitThreshold();
+    void pscWidebandAlertRejectsNonFiniteHitThreshold();
+    void pscWidebandAlertNormalizesInvalidBandwidthRange();
     void pscWidebandAlertResetRestartsConsecutiveCount();
     void pscWidebandAlertAcceptsSmallCenterFrequencyShift();
     void pscWidebandAlertTracksMultipleBandsIndependently();
@@ -1709,6 +1714,81 @@ void ServiceTests::pscWidebandAlertRejectsBandsAboveMaximumWidth()
 
     QVERIFY(detector.update(tooWide).isEmpty());
     QVERIFY(detector.update(tooWide).isEmpty());
+}
+
+void ServiceTests::pscWidebandAlertAcceptsExactBandwidthBounds()
+{
+    PscWidebandAlertDetector detector(-60.0);
+    const CeyearPscFrame minimumWidth = pscWidebandFrame(5800000000.0, 16, 1000000.0);
+    const CeyearPscFrame maximumWidth = pscWidebandFrame(5900000000.0, 24, 1000000.0);
+
+    QVERIFY(detector.update(minimumWidth).isEmpty());
+    QCOMPARE(detector.update(minimumWidth).first().bandwidthHz, 16000000.0);
+
+    detector.reset();
+    QVERIFY(detector.update(maximumWidth).isEmpty());
+    QCOMPARE(detector.update(maximumWidth).first().bandwidthHz, 24000000.0);
+}
+
+void ServiceTests::pscWidebandAlertUsesConfiguredHitThreshold()
+{
+    CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
+    for (CeyearPscBin &bin : frame.bins) {
+        bin.levelDbuv = -61.0;
+    }
+
+    PscWidebandAlertDetector detector(-60.0);
+    QVERIFY(detector.update(frame).isEmpty());
+    QVERIFY(detector.update(frame).isEmpty());
+
+    CeyearPscFrame thresholdFrame = frame;
+    for (CeyearPscBin &bin : thresholdFrame.bins) {
+        bin.levelDbuv = -60.0;
+    }
+    detector.reset();
+    QVERIFY(detector.update(thresholdFrame).isEmpty());
+    QCOMPARE(detector.update(thresholdFrame).size(), 1);
+}
+
+void ServiceTests::pscWidebandAlertRejectsNonFiniteHitThreshold()
+{
+    CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
+    for (CeyearPscBin &bin : frame.bins) {
+        bin.levelDbuv = -61.0;
+    }
+
+    PscWidebandAlertDetector nanDetector(std::numeric_limits<double>::quiet_NaN());
+    QVERIFY(nanDetector.update(frame).isEmpty());
+    QVERIFY(nanDetector.update(frame).isEmpty());
+
+    PscWidebandAlertDetector infiniteDetector(std::numeric_limits<double>::infinity());
+    QVERIFY(infiniteDetector.update(frame).isEmpty());
+    QVERIFY(infiniteDetector.update(frame).isEmpty());
+}
+
+void ServiceTests::pscWidebandAlertNormalizesInvalidBandwidthRange()
+{
+    const CeyearPscFrame tooWide = pscWidebandFrame(5800000000.0, 25, 1000000.0);
+
+    PscWidebandAlertDetector nonFiniteDetector(-60.0,
+                                                std::numeric_limits<double>::quiet_NaN(),
+                                                40000000.0);
+    QVERIFY(nonFiniteDetector.update(tooWide).isEmpty());
+    QVERIFY(nonFiniteDetector.update(tooWide).isEmpty());
+
+    PscWidebandAlertDetector infiniteDetector(-60.0,
+                                               16000000.0,
+                                               std::numeric_limits<double>::infinity());
+    QVERIFY(infiniteDetector.update(tooWide).isEmpty());
+    QVERIFY(infiniteDetector.update(tooWide).isEmpty());
+
+    PscWidebandAlertDetector negativeDetector(-60.0, -1.0, 40000000.0);
+    QVERIFY(negativeDetector.update(tooWide).isEmpty());
+    QVERIFY(negativeDetector.update(tooWide).isEmpty());
+
+    PscWidebandAlertDetector reversedDetector(-60.0, 24000000.0, 16000000.0);
+    QVERIFY(reversedDetector.update(tooWide).isEmpty());
+    QVERIFY(reversedDetector.update(tooWide).isEmpty());
 }
 
 void ServiceTests::pscWidebandAlertResetRestartsConsecutiveCount()

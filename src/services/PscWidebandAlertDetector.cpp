@@ -4,15 +4,31 @@
 #include <cmath>
 #include <limits>
 
+namespace {
+
+bool isValidBandwidthRange(double minimumBandwidthHz, double maximumBandwidthHz)
+{
+    return std::isfinite(minimumBandwidthHz)
+        && std::isfinite(maximumBandwidthHz)
+        && minimumBandwidthHz >= 0.0
+        && maximumBandwidthHz >= minimumBandwidthHz;
+}
+
+} // namespace
+
 PscWidebandAlertDetector::PscWidebandAlertDetector(double hitThresholdDbuv,
                                                    double minimumBandwidthHz,
                                                    double maximumBandwidthHz,
                                                    int requiredConsecutiveFrames)
-    : m_hitThresholdDbuv(hitThresholdDbuv)
+    : m_hitThresholdDbuv(std::isfinite(hitThresholdDbuv) ? hitThresholdDbuv : DefaultHitThresholdDbuv)
     , m_minimumBandwidthHz(minimumBandwidthHz)
     , m_maximumBandwidthHz(maximumBandwidthHz)
     , m_requiredConsecutiveFrames((std::max)(2, requiredConsecutiveFrames))
 {
+    if (!isValidBandwidthRange(m_minimumBandwidthHz, m_maximumBandwidthHz)) {
+        m_minimumBandwidthHz = DefaultMinimumBandwidthHz;
+        m_maximumBandwidthHz = DefaultMaximumBandwidthHz;
+    }
 }
 
 QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame &frame)
