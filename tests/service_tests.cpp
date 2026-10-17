@@ -86,7 +86,9 @@ private slots:
     void pscWidebandAlertAcceptsExactBandwidthBounds();
     void pscWidebandAlertUsesConfiguredHitThreshold();
     void pscWidebandAlertRejectsNonFiniteHitThreshold();
+    void pscWidebandAlertNonFiniteThresholdFallsBackToDefault();
     void pscWidebandAlertNormalizesInvalidBandwidthRange();
+    void pscWidebandAlertInvalidBandwidthRangeFallsBackToDefaults();
     void pscWidebandAlertResetRestartsConsecutiveCount();
     void pscWidebandAlertAcceptsSmallCenterFrequencyShift();
     void pscWidebandAlertTracksMultipleBandsIndependently();
@@ -1766,6 +1768,20 @@ void ServiceTests::pscWidebandAlertRejectsNonFiniteHitThreshold()
     QVERIFY(infiniteDetector.update(frame).isEmpty());
 }
 
+void ServiceTests::pscWidebandAlertNonFiniteThresholdFallsBackToDefault()
+{
+    CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
+    for (CeyearPscBin &bin : frame.bins) {
+        bin.levelDbuv = -60.0;
+    }
+
+    PscWidebandAlertDetector detector(std::numeric_limits<double>::quiet_NaN());
+    QVERIFY(detector.update(frame).isEmpty());
+    const QVector<PscWidebandAlert> alerts = detector.update(frame);
+    QCOMPARE(alerts.size(), 1);
+    QCOMPARE(alerts.first().peakLevelDbuv, -60.0);
+}
+
 void ServiceTests::pscWidebandAlertNormalizesInvalidBandwidthRange()
 {
     const CeyearPscFrame tooWide = pscWidebandFrame(5800000000.0, 25, 1000000.0);
@@ -1789,6 +1805,40 @@ void ServiceTests::pscWidebandAlertNormalizesInvalidBandwidthRange()
     PscWidebandAlertDetector reversedDetector(-60.0, 24000000.0, 16000000.0);
     QVERIFY(reversedDetector.update(tooWide).isEmpty());
     QVERIFY(reversedDetector.update(tooWide).isEmpty());
+}
+
+void ServiceTests::pscWidebandAlertInvalidBandwidthRangeFallsBackToDefaults()
+{
+    const double invalidMinimumBandwidthHz = std::numeric_limits<double>::quiet_NaN();
+    const double configuredMaximumBandwidthHz = 40000000.0;
+
+    PscWidebandAlertDetector tooNarrowDetector(-60.0,
+                                                invalidMinimumBandwidthHz,
+                                                configuredMaximumBandwidthHz);
+    const CeyearPscFrame tooNarrow = pscWidebandFrame(5800000000.0, 15, 1000000.0);
+    QVERIFY(tooNarrowDetector.update(tooNarrow).isEmpty());
+    QVERIFY(tooNarrowDetector.update(tooNarrow).isEmpty());
+
+    PscWidebandAlertDetector minimumDetector(-60.0,
+                                              invalidMinimumBandwidthHz,
+                                              configuredMaximumBandwidthHz);
+    const CeyearPscFrame minimumWidth = pscWidebandFrame(5800000000.0, 16, 1000000.0);
+    QVERIFY(minimumDetector.update(minimumWidth).isEmpty());
+    QCOMPARE(minimumDetector.update(minimumWidth).size(), 1);
+
+    PscWidebandAlertDetector maximumDetector(-60.0,
+                                              invalidMinimumBandwidthHz,
+                                              configuredMaximumBandwidthHz);
+    const CeyearPscFrame maximumWidth = pscWidebandFrame(5800000000.0, 24, 1000000.0);
+    QVERIFY(maximumDetector.update(maximumWidth).isEmpty());
+    QCOMPARE(maximumDetector.update(maximumWidth).size(), 1);
+
+    PscWidebandAlertDetector tooWideDetector(-60.0,
+                                              invalidMinimumBandwidthHz,
+                                              configuredMaximumBandwidthHz);
+    const CeyearPscFrame tooWide = pscWidebandFrame(5800000000.0, 25, 1000000.0);
+    QVERIFY(tooWideDetector.update(tooWide).isEmpty());
+    QVERIFY(tooWideDetector.update(tooWide).isEmpty());
 }
 
 void ServiceTests::pscWidebandAlertResetRestartsConsecutiveCount()
