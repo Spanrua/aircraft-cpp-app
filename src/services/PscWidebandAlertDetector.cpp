@@ -11,7 +11,7 @@ PscWidebandAlertDetector::PscWidebandAlertDetector(double hitThresholdDbuv,
     : m_hitThresholdDbuv(hitThresholdDbuv)
     , m_minimumBandwidthHz(minimumBandwidthHz)
     , m_maximumBandwidthHz(maximumBandwidthHz)
-    , m_requiredConsecutiveFrames(std::max(1, requiredConsecutiveFrames))
+    , m_requiredConsecutiveFrames((std::max)(2, requiredConsecutiveFrames))
 {
 }
 
@@ -32,7 +32,7 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame 
     for (int index = 1; index < bins.size(); ++index) {
         const double gapHz = bins.at(index).frequencyHz - bins.at(index - 1).frequencyHz;
         if (gapHz > 0.0) {
-            binStepHz = std::min(binStepHz, gapHz);
+            binStepHz = (std::min)(binStepHz, gapHz);
         }
     }
 
@@ -68,14 +68,14 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame 
                 band.peakLevelDbuv = bin.levelDbuv;
                 hasBand = true;
             } else {
-                band.peakLevelDbuv = std::max(band.peakLevelDbuv, bin.levelDbuv);
+                band.peakLevelDbuv = (std::max)(band.peakLevelDbuv, bin.levelDbuv);
             }
             lastFrequencyHz = bin.frequencyHz;
         }
         appendBand();
     }
 
-    const double centerToleranceHz = std::max(25000.0, binStepHz * 2.0);
+    const double centerToleranceHz = (std::max)(25000.0, binStepHz * 2.0);
     QVector<bool> previousMatched(m_previousAlerts.size(), false);
     for (PscWidebandAlert &alert : currentAlerts) {
         int closestPrevious = -1;

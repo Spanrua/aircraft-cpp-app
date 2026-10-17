@@ -79,7 +79,9 @@ private slots:
     void ceyearPscCandidateExtractorPromotesPersistentPeaks();
     void ceyearPscCandidateExtractorUsesConfiguredHitThreshold();
     void pscWidebandAlertWaitsForSecondConsecutiveFrame();
+    void pscWidebandAlertNeverConfirmsOnFirstFrameWhenConfiguredForOne();
     void pscWidebandAlertRejectsBandsBelowMinimumWidth();
+    void pscWidebandAlertRejectsBandsAboveMaximumWidth();
     void pscWidebandAlertResetRestartsConsecutiveCount();
     void pscWidebandAlertAcceptsSmallCenterFrequencyShift();
     void pscWidebandAlertTracksMultipleBandsIndependently();
@@ -1682,6 +1684,15 @@ void ServiceTests::pscWidebandAlertWaitsForSecondConsecutiveFrame()
     QCOMPARE(alerts.first().consecutiveFrameCount, 2);
 }
 
+void ServiceTests::pscWidebandAlertNeverConfirmsOnFirstFrameWhenConfiguredForOne()
+{
+    PscWidebandAlertDetector detector(-60.0, 16000000.0, 24000000.0, 1);
+    const CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
+
+    QVERIFY(detector.update(frame).isEmpty());
+    QCOMPARE(detector.update(frame).first().consecutiveFrameCount, 2);
+}
+
 void ServiceTests::pscWidebandAlertRejectsBandsBelowMinimumWidth()
 {
     PscWidebandAlertDetector detector(-60.0);
@@ -1689,6 +1700,15 @@ void ServiceTests::pscWidebandAlertRejectsBandsBelowMinimumWidth()
 
     QVERIFY(detector.update(tooNarrow).isEmpty());
     QVERIFY(detector.update(tooNarrow).isEmpty());
+}
+
+void ServiceTests::pscWidebandAlertRejectsBandsAboveMaximumWidth()
+{
+    PscWidebandAlertDetector detector(-60.0);
+    const CeyearPscFrame tooWide = pscWidebandFrame(5800000000.0, 25, 1000000.0);
+
+    QVERIFY(detector.update(tooWide).isEmpty());
+    QVERIFY(detector.update(tooWide).isEmpty());
 }
 
 void ServiceTests::pscWidebandAlertResetRestartsConsecutiveCount()
