@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include "app/ProjectPaths.h"
 #include "core/Records.h"
 #include "services/AppStateStore.h"
 #include "services/CeyearVisaService.h"
@@ -410,6 +411,8 @@ private slots:
     void sweepPageExposesPscControlsAndWaterfall();
     void sweepPageExposesOfflineCsvReplayButton();
     void sweepPageReplaysOfflineFramesWithoutStartingHardware();
+    void sweepPageStopsOfflineReplayBeforeConfirmingCandidate();
+    void sweepPageReplaysWidebandAlertFromCsv();
     void sweepPageOmitsBehaviorTaggingControls();
     void sweepPageEmitsConfirmedCandidateFrequency();
     void sweepPageStopsActiveSweepBeforeConfirmingCandidate();
@@ -422,6 +425,7 @@ private slots:
     void sweepPageUpdatesWaterfallAndCandidatesFromPscFrame();
     void sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity();
     void sweepPageMergesDriftingWidebandAlertHistory();
+    void sweepPageMergesWidebandHistoryAcrossResolutionChanges();
     void sweepPageResetClearsWidebandAlert();
     void sweepPageClearsWaterfallWhenStartingNewSweep();
     void sweepPageSavesPscFramesToCsv();
@@ -788,6 +792,79 @@ void UiTests::sweepPageReplaysOfflineFramesWithoutStartingHardware()
     QCOMPARE(servicePtr->stopPscSweepCount, 0);
 }
 
+void UiTests::sweepPageStopsOfflineReplayBeforeConfirmingCandidate()
+{
+    SweepPage page;
+    auto *waterfall = page.findChild<WaterfallWidget *>(QStringLiteral("PscWaterfallWidget"));
+    auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+    auto *confirmButton = page.findChild<QPushButton *>(QStringLiteral("ConfirmPscCandidateButton"));
+    auto *statusLabel = page.findChild<QLabel *>(QStringLiteral("PscSweepStatusLabel"));
+    QVERIFY(waterfall != nullptr);
+    QVERIFY(candidateTable != nullptr);
+    QVERIFY(confirmButton != nullptr);
+    QVERIFY(statusLabel != nullptr);
+
+    QVector<CeyearPscFrame> frames;
+    for (int index = 0; index < 10; ++index) {
+        frames.append({{{900000000.0, -72.0}, {901000000.0, -35.0}}});
+    }
+    QSignalSpy frequencySpy(&page, SIGNAL(frequencyConfirmed(double)));
+    page.startOfflineReplayForTest(frames);
+
+    QTRY_VERIFY(candidateTable->rowCount() > 0);
+    candidateTable->selectRow(0);
+    QTest::mouseClick(confirmButton, Qt::LeftButton);
+    const int stoppedFrameCount = waterfall->frameCount();
+
+    QCOMPARE(frequencySpy.count(), 1);
+    QTest::qWait(250);
+    QCOMPARE(waterfall->frameCount(), stoppedFrameCount);
+    QVERIFY(statusLabel->text().contains(QStringLiteral("离线演示回放已停止")));
+}
+
+void UiTests::sweepPageReplaysWidebandAlertFromCsv()
+{
+    QVERIFY(QDir().mkpath(ProjectPaths::dataDirectory()));
+    QTemporaryDir temporaryDirectory(
+        QDir(ProjectPaths::dataDirectory()).filePath(QStringLiteral("psc-wideband-alert-XXXXXX")));
+    QVERIFY(temporaryDirectory.isValid());
+    const QString csvPath = temporaryDirectory.filePath(QStringLiteral("wideband.csv"));
+
+    const auto widebandFrame = [](double startHz) {
+        CeyearPscFrame frame;
+        for (int index = 0; index <= 20; ++index) {
+            frame.bins.append({startHz + index * 1000000.0, -35.0});
+        }
+        return frame;
+    };
+    QString error;
+    QVERIFY2(saveCeyearPscFramesCsv(csvPath,
+                                    {widebandFrame(2400000000.0), widebandFrame(2400000000.0)},
+                                    &error),
+             qPrintable(error));
+
+    SweepPage page;
+    auto *importButton = page.findChild<QPushButton *>(QStringLiteral("ImportPscSweepCsvButton"));
+    auto *alertLabel = page.findChild<QLabel *>(QStringLiteral("PscWidebandAlertLabel"));
+    auto *waterfall = page.findChild<WaterfallWidget *>(QStringLiteral("PscWaterfallWidget"));
+    QVERIFY(importButton != nullptr);
+    QVERIFY(alertLabel != nullptr);
+    QVERIFY(waterfall != nullptr);
+
+    selectFileInActiveDialog(csvPath);
+    QTest::mouseClick(importButton, Qt::LeftButton);
+
+    QTRY_VERIFY(!alertLabel->isHidden());
+    QVERIFY(waterfall->hasAlertBand());
+
+    const QVector<CeyearPscFrame> quietFrames = {
+        {{{900000000.0, -72.0}, {901000000.0, -72.0}}},
+    };
+    page.startOfflineReplayForTest(quietFrames);
+    QVERIFY(alertLabel->isHidden());
+    QVERIFY(!waterfall->hasAlertBand());
+}
+
 void UiTests::sweepPageOmitsBehaviorTaggingControls()
 {
     SweepPage page;
@@ -1081,6 +1158,36 @@ void UiTests::sweepPageMergesDriftingWidebandAlertHistory()
     page.appendPscFrameForTest(initialFrame);
     page.appendPscFrameForTest(initialFrame);
     page.appendPscFrameForTest(widebandFrame(2401500000.0));
+
+    int alertRows = 0;
+    for (int row = 0; row < candidateTable->rowCount(); ++row) {
+        const QTableWidgetItem *stateItem = candidateTable->item(row, 4);
+        if (stateItem && stateItem->text() == QStringLiteral("告警")) {
+            ++alertRows;
+            QCOMPARE(candidateTable->item(row, 2)->text(), QStringLiteral("3"));
+        }
+    }
+    QCOMPARE(alertRows, 1);
+}
+
+void UiTests::sweepPageMergesWidebandHistoryAcrossResolutionChanges()
+{
+    SweepPage page;
+    auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+    QVERIFY(candidateTable != nullptr);
+
+    const auto widebandFrame = [](double startHz, double binStepHz, int lastIndex) {
+        CeyearPscFrame frame;
+        for (int index = 0; index <= lastIndex; ++index) {
+            frame.bins.append({startHz + index * binStepHz, -35.0});
+        }
+        return frame;
+    };
+
+    const CeyearPscFrame coarseFrame = widebandFrame(2400000000.0, 2000000.0, 10);
+    page.appendPscFrameForTest(coarseFrame);
+    page.appendPscFrameForTest(coarseFrame);
+    page.appendPscFrameForTest(widebandFrame(2403000000.0, 1000000.0, 20));
 
     int alertRows = 0;
     for (int row = 0; row < candidateTable->rowCount(); ++row) {

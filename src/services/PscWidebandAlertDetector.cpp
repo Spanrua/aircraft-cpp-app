@@ -97,6 +97,7 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame 
     }
     QVector<bool> previousMatched(m_previousAlerts.size(), false);
     for (PscWidebandAlert &alert : currentAlerts) {
+        const double currentToleranceHz = alert.centerToleranceHz;
         int closestPrevious = -1;
         double closestDifferenceHz = std::numeric_limits<double>::infinity();
         for (int index = 0; index < m_previousAlerts.size(); ++index) {
@@ -105,7 +106,9 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame 
             }
 
             const double differenceHz = std::abs(alert.centerHz - m_previousAlerts.at(index).centerHz);
-            if (differenceHz <= centerToleranceHz && differenceHz < closestDifferenceHz) {
+            const double previousToleranceHz = m_previousAlerts.at(index).centerToleranceHz;
+            const double matchingToleranceHz = (std::max)(currentToleranceHz, previousToleranceHz);
+            if (differenceHz <= matchingToleranceHz && differenceHz < closestDifferenceHz) {
                 closestPrevious = index;
                 closestDifferenceHz = differenceHz;
             }

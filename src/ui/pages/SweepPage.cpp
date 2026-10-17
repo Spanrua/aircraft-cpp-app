@@ -878,10 +878,14 @@ void SweepPage::showWidebandAlert(const PscWidebandAlert &alert)
 
 void SweepPage::recordWidebandAlert(const PscWidebandAlert &alert)
 {
-    const double matchingCenterToleranceHz = alert.centerToleranceHz >= 25000.0
+    const double alertToleranceHz = alert.centerToleranceHz >= 25000.0
         ? alert.centerToleranceHz
         : 25000.0;
     for (PscWidebandAlert &recordedAlert : m_widebandAlertHistory) {
+        const double recordedToleranceHz = recordedAlert.centerToleranceHz >= 25000.0
+            ? recordedAlert.centerToleranceHz
+            : 25000.0;
+        const double matchingCenterToleranceHz = (std::max)(alertToleranceHz, recordedToleranceHz);
         if (qAbs(recordedAlert.centerHz - alert.centerHz) <= matchingCenterToleranceHz) {
             recordedAlert = alert;
             return;
@@ -907,6 +911,9 @@ void SweepPage::confirmSelectedCandidate()
         return;
     }
     if (!m_pscSweepActive) {
+        if (m_offlineReplayActive) {
+            stopOfflineReplay();
+        }
         emit frequencyConfirmed(frequencyHz);
         return;
     }

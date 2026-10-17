@@ -91,6 +91,7 @@ private slots:
     void pscWidebandAlertInvalidBandwidthRangeFallsBackToDefaults();
     void pscWidebandAlertResetRestartsConsecutiveCount();
     void pscWidebandAlertAcceptsSmallCenterFrequencyShift();
+    void pscWidebandAlertUsesLargestResolutionTolerance();
     void pscWidebandAlertTracksMultipleBandsIndependently();
     void ceyearPscSweepCsvWriterPersistsFrameBins();
     void ceyearPscSweepCsvReaderRestoresSortedFrames();
@@ -1860,6 +1861,22 @@ void ServiceTests::pscWidebandAlertAcceptsSmallCenterFrequencyShift()
     const QVector<PscWidebandAlert> alerts = detector.update(pscWidebandFrame(5801000000.0, 20, 1000000.0));
     QCOMPARE(alerts.size(), 1);
     QCOMPARE(alerts.first().consecutiveFrameCount, 2);
+}
+
+void ServiceTests::pscWidebandAlertUsesLargestResolutionTolerance()
+{
+    PscWidebandAlertDetector detector(-60.0);
+    const CeyearPscFrame coarseFrame = pscWidebandFrame(5800000000.0, 11, 2000000.0);
+    const CeyearPscFrame fineFrame = pscWidebandFrame(5803000000.0, 21, 1000000.0);
+
+    QVERIFY(detector.update(coarseFrame).isEmpty());
+    const QVector<PscWidebandAlert> confirmedCoarseAlerts = detector.update(coarseFrame);
+    QCOMPARE(confirmedCoarseAlerts.size(), 1);
+    QCOMPARE(confirmedCoarseAlerts.first().centerToleranceHz, 4000000.0);
+
+    const QVector<PscWidebandAlert> confirmedFineAlerts = detector.update(fineFrame);
+    QCOMPARE(confirmedFineAlerts.size(), 1);
+    QCOMPARE(confirmedFineAlerts.first().consecutiveFrameCount, 3);
 }
 
 void ServiceTests::pscWidebandAlertTracksMultipleBandsIndependently()
