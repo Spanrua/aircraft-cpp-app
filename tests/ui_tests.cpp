@@ -328,6 +328,7 @@ private slots:
     void waterfallWidgetDrawsPersistentFrequencyAsVerticalTrace();
     void waterfallWidgetDrawsTimeFrequencyAxes();
     void waterfallWidgetClearsBufferedFrames();
+    void waterfallWidgetTracksWidebandAlertBand();
     void sweepPageExposesPscControlsAndWaterfall();
     void sweepPageEmitsConfirmedCandidateFrequency();
     void sweepPageStartsPscSweepFromDefaultSegments();
@@ -517,6 +518,22 @@ void UiTests::waterfallWidgetClearsBufferedFrames()
     widget.clearFrames();
 
     QCOMPARE(widget.frameCount(), 0);
+}
+
+void UiTests::waterfallWidgetTracksWidebandAlertBand()
+{
+    WaterfallWidget widget;
+    QVERIFY(!widget.hasAlertBand());
+
+    PscWidebandAlert alert;
+    alert.startHz = 2400000000.0;
+    alert.stopHz = 2420000000.0;
+    widget.setAlertBand(alert);
+
+    QVERIFY(widget.hasAlertBand());
+
+    widget.clearAlertBand();
+    QVERIFY(!widget.hasAlertBand());
 }
 
 void UiTests::sweepPageExposesPscControlsAndWaterfall()

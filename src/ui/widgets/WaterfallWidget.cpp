@@ -148,6 +148,27 @@ int WaterfallWidget::frameCount() const
     return m_frames.size();
 }
 
+void WaterfallWidget::setAlertBand(const PscWidebandAlert &alert)
+{
+    m_alertBand = alert;
+    update();
+}
+
+void WaterfallWidget::clearAlertBand()
+{
+    if (!m_alertBand.has_value()) {
+        return;
+    }
+
+    m_alertBand.reset();
+    update();
+}
+
+bool WaterfallWidget::hasAlertBand() const
+{
+    return m_alertBand.has_value();
+}
+
 void WaterfallWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
@@ -199,7 +220,40 @@ void WaterfallWidget::paintEvent(QPaintEvent *event)
         }
     }
 
+    drawAlertBand(&painter, plot, axisStartHz, axisStopHz);
     drawAxes(&painter, plot, axisStartHz, axisStopHz);
+}
+
+void WaterfallWidget::drawAlertBand(QPainter *painter,
+                                    const QRect &plot,
+                                    double startHz,
+                                    double stopHz) const
+{
+    if (!m_alertBand.has_value()
+        || stopHz <= startHz
+        || m_alertBand->stopHz <= m_alertBand->startHz
+        || m_alertBand->stopHz <= startHz
+        || m_alertBand->startHz >= stopHz) {
+        return;
+    }
+
+    const double boundedStartHz = qMax(startHz, m_alertBand->startHz);
+    const double boundedStopHz = qMin(stopHz, m_alertBand->stopHz);
+    const int rawLeft = plot.left() + frequencyToX(boundedStartHz, startHz, stopHz, plot.width());
+    const int rawRight = plot.left() + frequencyToX(boundedStopHz, startHz, stopHz, plot.width());
+    const int left = qBound(plot.left(), rawLeft, plot.right() + 1);
+    const int right = qBound(plot.left(), rawRight, plot.right() + 1);
+    if (right <= left) {
+        return;
+    }
+
+    painter->save();
+    painter->setClipRect(plot);
+    painter->fillRect(QRect(left, plot.top(), right - left, plot.height()), QColor(255, 153, 51, 60));
+    painter->setPen(QPen(QColor(255, 190, 92, 220), 1));
+    painter->drawLine(left, plot.top(), left, plot.bottom());
+    painter->drawLine(right - 1, plot.top(), right - 1, plot.bottom());
+    painter->restore();
 }
 
 void WaterfallWidget::drawAxes(QPainter *painter, const QRect &plot, double startHz, double stopHz) const
