@@ -329,6 +329,8 @@ private slots:
     void waterfallWidgetDrawsTimeFrequencyAxes();
     void waterfallWidgetClearsBufferedFrames();
     void waterfallWidgetTracksWidebandAlertBand();
+    void waterfallWidgetRendersSingleBinWidebandAlertFromCenterAndBandwidth();
+    void waterfallWidgetClipsWidebandAlertBandToPlot();
     void sweepPageExposesPscControlsAndWaterfall();
     void sweepPageEmitsConfirmedCandidateFrequency();
     void sweepPageStartsPscSweepFromDefaultSegments();
@@ -534,6 +536,77 @@ void UiTests::waterfallWidgetTracksWidebandAlertBand()
 
     widget.clearAlertBand();
     QVERIFY(!widget.hasAlertBand());
+}
+
+void UiTests::waterfallWidgetRendersSingleBinWidebandAlertFromCenterAndBandwidth()
+{
+    WaterfallWidget widget;
+    widget.resize(600, 300);
+    widget.setMaximumRows(1);
+    widget.setFrequencyRange(2400000000.0, 2500000000.0);
+    widget.appendFrame({{{2400000000.0, -90.0}, {2500000000.0, -90.0}}});
+
+    const QRect plot = widget.plotArea();
+    const QPoint samplePoint(plot.center().x(), plot.center().y());
+    QImage baseline(widget.size(), QImage::Format_ARGB32);
+    baseline.fill(Qt::transparent);
+    widget.render(&baseline);
+
+    PscWidebandAlert alert;
+    alert.startHz = 2450000000.0;
+    alert.stopHz = 2450000000.0;
+    alert.centerHz = 2450000000.0;
+    alert.bandwidthHz = 20000000.0;
+    widget.setAlertBand(alert);
+
+    QImage withAlert(widget.size(), QImage::Format_ARGB32);
+    withAlert.fill(Qt::transparent);
+    widget.render(&withAlert);
+
+    const QColor baselineColor = baseline.pixelColor(samplePoint);
+    const QColor alertColor = withAlert.pixelColor(samplePoint);
+    QVERIFY2(alertColor.red() > baselineColor.red(),
+             qPrintable(QStringLiteral("wideband alert should add orange to the plot, before rgb(%1,%2,%3), after rgb(%4,%5,%6)")
+                            .arg(baselineColor.red())
+                            .arg(baselineColor.green())
+                            .arg(baselineColor.blue())
+                            .arg(alertColor.red())
+                            .arg(alertColor.green())
+                            .arg(alertColor.blue())));
+
+    widget.clearAlertBand();
+    QImage cleared(widget.size(), QImage::Format_ARGB32);
+    cleared.fill(Qt::transparent);
+    widget.render(&cleared);
+    QCOMPARE(cleared.pixelColor(samplePoint), baselineColor);
+}
+
+void UiTests::waterfallWidgetClipsWidebandAlertBandToPlot()
+{
+    WaterfallWidget widget;
+    widget.resize(600, 300);
+    widget.setMaximumRows(1);
+    widget.setFrequencyRange(2400000000.0, 2500000000.0);
+    widget.appendFrame({{{2400000000.0, -90.0}, {2500000000.0, -90.0}}});
+
+    const QRect plot = widget.plotArea();
+    const QPoint insidePoint(plot.left() + 10, plot.center().y());
+    const QPoint outsidePoint(plot.left() - 8, plot.center().y());
+    QImage baseline(widget.size(), QImage::Format_ARGB32);
+    baseline.fill(Qt::transparent);
+    widget.render(&baseline);
+
+    PscWidebandAlert alert;
+    alert.centerHz = 2395000000.0;
+    alert.bandwidthHz = 20000000.0;
+    widget.setAlertBand(alert);
+
+    QImage withAlert(widget.size(), QImage::Format_ARGB32);
+    withAlert.fill(Qt::transparent);
+    widget.render(&withAlert);
+
+    QVERIFY(withAlert.pixelColor(insidePoint).red() > baseline.pixelColor(insidePoint).red());
+    QCOMPARE(withAlert.pixelColor(outsidePoint), baseline.pixelColor(outsidePoint));
 }
 
 void UiTests::sweepPageExposesPscControlsAndWaterfall()

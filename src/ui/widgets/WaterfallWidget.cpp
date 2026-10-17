@@ -4,6 +4,8 @@
 #include <QtMath>
 #include <QtGlobal>
 
+#include <cmath>
+
 namespace
 {
 constexpr int kPlotLeftMargin = 72;
@@ -83,6 +85,27 @@ int frequencyToX(double frequencyHz, double startHz, double stopHz, int width)
 QString frequencyLabel(double frequencyHz)
 {
     return QStringLiteral("%1 MHz").arg(frequencyHz / 1000000.0, 0, 'f', 1);
+}
+
+bool alertFrequencyBounds(const PscWidebandAlert &alert, double *startHz, double *stopHz)
+{
+    if (std::isfinite(alert.centerHz)
+        && std::isfinite(alert.bandwidthHz)
+        && alert.bandwidthHz > 0.0) {
+        *startHz = alert.centerHz - alert.bandwidthHz / 2.0;
+        *stopHz = alert.centerHz + alert.bandwidthHz / 2.0;
+        return true;
+    }
+
+    if (std::isfinite(alert.startHz)
+        && std::isfinite(alert.stopHz)
+        && alert.stopHz > alert.startHz) {
+        *startHz = alert.startHz;
+        *stopHz = alert.stopHz;
+        return true;
+    }
+
+    return false;
 }
 } // namespace
 
@@ -229,16 +252,18 @@ void WaterfallWidget::drawAlertBand(QPainter *painter,
                                     double startHz,
                                     double stopHz) const
 {
+    double alertStartHz = 0.0;
+    double alertStopHz = 0.0;
     if (!m_alertBand.has_value()
         || stopHz <= startHz
-        || m_alertBand->stopHz <= m_alertBand->startHz
-        || m_alertBand->stopHz <= startHz
-        || m_alertBand->startHz >= stopHz) {
+        || !alertFrequencyBounds(*m_alertBand, &alertStartHz, &alertStopHz)
+        || alertStopHz <= startHz
+        || alertStartHz >= stopHz) {
         return;
     }
 
-    const double boundedStartHz = qMax(startHz, m_alertBand->startHz);
-    const double boundedStopHz = qMin(stopHz, m_alertBand->stopHz);
+    const double boundedStartHz = qMax(startHz, alertStartHz);
+    const double boundedStopHz = qMin(stopHz, alertStopHz);
     const int rawLeft = plot.left() + frequencyToX(boundedStartHz, startHz, stopHz, plot.width());
     const int rawRight = plot.left() + frequencyToX(boundedStopHz, startHz, stopHz, plot.width());
     const int left = qBound(plot.left(), rawLeft, plot.right() + 1);
