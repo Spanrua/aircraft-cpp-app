@@ -95,6 +95,7 @@ private slots:
     void pscWidebandAlertTracksMultipleBandsIndependently();
     void pscWidebandAlertClassifiesConfiguredBandwidthRanges();
     void pscWidebandAlertDoesNotMergeDifferentBandwidthClasses();
+    void pscWidebandAlertClassifiesOfflineSegmentOnFirstFrame();
     void ceyearPscSweepCsvWriterPersistsFrameBins();
     void ceyearPscSweepCsvReaderRestoresSortedFrames();
     void ceyearPscSweepCsvReaderSkipsZeroFrequencySentinelBins();
@@ -1936,6 +1937,18 @@ void ServiceTests::pscWidebandAlertDoesNotMergeDifferentBandwidthClasses()
     QCOMPARE(alerts.size(), 1);
     QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("40M"));
     QCOMPARE(alerts.first().consecutiveFrameCount, 2);
+}
+
+void ServiceTests::pscWidebandAlertClassifiesOfflineSegmentOnFirstFrame()
+{
+    PscWidebandAlertDetector detector(-60.0);
+    const CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 10, 1000000.0);
+
+    const QVector<PscWidebandAlert> classified = detector.classifyFrame(frame);
+    QCOMPARE(classified.size(), 1);
+    QCOMPARE(classified.first().bandwidthClass, QStringLiteral("10M"));
+    QCOMPARE(classified.first().consecutiveFrameCount, 0);
+    QVERIFY(detector.update(frame).isEmpty());
 }
 
 void ServiceTests::ceyearPscSweepCsvWriterPersistsFrameBins()

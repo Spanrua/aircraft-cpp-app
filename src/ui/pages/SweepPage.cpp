@@ -808,9 +808,11 @@ void SweepPage::appendPscFrame(const CeyearPscFrame &frame)
     }
 
     m_candidateExtractor.update(frame);
-    const QVector<PscWidebandAlert> confirmedAlerts = m_widebandAlertDetector.update(frame);
-    if (!confirmedAlerts.isEmpty()) {
-        const auto strongestAlert = std::max_element(confirmedAlerts.cbegin(), confirmedAlerts.cend(),
+    const QVector<PscWidebandAlert> alerts = m_offlineReplayActive
+        ? m_widebandAlertDetector.classifyFrame(frame)
+        : m_widebandAlertDetector.update(frame);
+    if (!alerts.isEmpty()) {
+        const auto strongestAlert = std::max_element(alerts.cbegin(), alerts.cend(),
                                                      [](const PscWidebandAlert &left, const PscWidebandAlert &right) {
                                                          return left.peakLevelDbuv < right.peakLevelDbuv;
                                                      });

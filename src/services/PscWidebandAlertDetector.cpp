@@ -41,7 +41,7 @@ QVector<PscWidebandRule> PscWidebandAlertDetector::defaultRules()
     };
 }
 
-QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame &frame)
+QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyFrame(const CeyearPscFrame &frame) const
 {
     QVector<CeyearPscBin> bins;
     bins.reserve(frame.bins.size());
@@ -109,6 +109,12 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame 
     for (PscWidebandAlert &alert : currentAlerts) {
         alert.centerToleranceHz = centerToleranceHz;
     }
+    return currentAlerts;
+}
+
+QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame &frame)
+{
+    QVector<PscWidebandAlert> currentAlerts = classifyFrame(frame);
     QVector<bool> previousMatched(m_previousAlerts.size(), false);
     for (PscWidebandAlert &alert : currentAlerts) {
         const double currentToleranceHz = alert.centerToleranceHz;
