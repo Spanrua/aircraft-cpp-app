@@ -100,6 +100,7 @@ private slots:
     void pscWidebandAlertDoesNotMergeDifferentBandwidthClasses();
     void pscWidebandAlertClassifiesOfflineSegmentOnFirstFrame();
     void pscWidebandAlertClassifiesRepeatedOfflineSlices();
+    void pscWidebandAlertRanksPersistentOfflineSignalBeforeBriefPeak();
     void ceyearPscSweepCsvWriterPersistsFrameBins();
     void ceyearPscSweepCsvReaderRestoresSortedFrames();
     void ceyearPscSweepCsvReaderSkipsZeroFrequencySentinelBins();
@@ -1843,6 +1844,35 @@ void ServiceTests::pscWidebandAlertClassifiesRepeatedOfflineSlices()
     QCOMPARE(alerts.size(), 1);
     QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("20M"));
     QCOMPARE(alerts.first().consecutiveFrameCount, 5);
+}
+
+void ServiceTests::pscWidebandAlertRanksPersistentOfflineSignalBeforeBriefPeak()
+{
+    QVector<CeyearPscFrame> frames;
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        CeyearPscFrame briefPeakSlice;
+        CeyearPscFrame persistentSignalSlice;
+        CeyearPscFrame quietSlice;
+        for (int index = 0; index < 20; ++index) {
+            const double offsetHz = index * 500000.0;
+            briefPeakSlice.bins.append({5740000000.0 + offsetHz,
+                                        cycle < 3 && index >= 4 && index < 12 ? 40.0 : 0.0});
+            persistentSignalSlice.bins.append({5800000000.0 + offsetHz,
+                                               index >= 4 && index < 12 ? 25.0 : 0.0});
+            quietSlice.bins.append({5810000000.0 + offsetHz, 0.0});
+        }
+        frames.append(briefPeakSlice);
+        frames.append(persistentSignalSlice);
+        frames.append(quietSlice);
+    }
+
+    PscWidebandAlertDetector detector;
+    const QVector<PscWidebandAlert> alerts = detector.classifyOfflineSliceSequence(frames);
+
+    QCOMPARE(alerts.size(), 2);
+    QCOMPARE(alerts.first().consecutiveFrameCount, 5);
+    QVERIFY(qAbs(alerts.first().centerHz - 5803750000.0) < 1000000.0);
+    QVERIFY(alerts.first().peakLevelDbuv < alerts.at(1).peakLevelDbuv);
 }
 
 void ServiceTests::pscWidebandAlertRejectsNonFiniteHitThreshold()

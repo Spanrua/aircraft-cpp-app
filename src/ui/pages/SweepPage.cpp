@@ -475,11 +475,8 @@ void SweepPage::startOfflineReplay(const QVector<CeyearPscFrame> &frames, const 
     m_offlineReplayActive = true;
     m_pscSweepMessage = QStringLiteral("离线演示回放：%1").arg(QFileInfo(sourcePath).fileName());
     if (!offlineAlerts.isEmpty()) {
-        const auto strongestAlert = std::max_element(offlineAlerts.cbegin(), offlineAlerts.cend(),
-                                                     [](const PscWidebandAlert &left, const PscWidebandAlert &right) {
-                                                         return left.peakLevelDbuv < right.peakLevelDbuv;
-                                                     });
-        showWidebandAlert(*strongestAlert);
+        // Offline results are pre-ranked by persistence, then peak level.
+        showWidebandAlert(offlineAlerts.first());
     }
     if (m_startButton) {
         m_startButton->setEnabled(false);

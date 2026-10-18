@@ -357,7 +357,25 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyOfflineSliceSequence
                        (std::max)(25000.0, typicalStepHz * 2.0),
                        matchedRule->bandwidthClass});
     }
-    return alerts;
+    QVector<PscWidebandAlert> rankedAlerts;
+    rankedAlerts.reserve(alerts.size());
+    while (!alerts.isEmpty()) {
+        int bestIndex = 0;
+        for (int index = 1; index < alerts.size(); ++index) {
+            const PscWidebandAlert &candidate = alerts.at(index);
+            const PscWidebandAlert &best = alerts.at(bestIndex);
+            if (candidate.consecutiveFrameCount > best.consecutiveFrameCount
+                || (candidate.consecutiveFrameCount == best.consecutiveFrameCount
+                    && (candidate.peakLevelDbuv > best.peakLevelDbuv
+                        || (candidate.peakLevelDbuv == best.peakLevelDbuv
+                            && candidate.centerHz < best.centerHz)))) {
+                bestIndex = index;
+            }
+        }
+        rankedAlerts.append(alerts.at(bestIndex));
+        alerts.removeAt(bestIndex);
+    }
+    return rankedAlerts;
 }
 
 QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame &frame)
