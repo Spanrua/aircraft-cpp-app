@@ -41,6 +41,7 @@ public:
                                       int requiredConsecutiveFrames = 2);
 
     QVector<PscWidebandAlert> classifyFrame(const CeyearPscFrame &frame) const;
+    QVector<PscWidebandAlert> classifyOfflineSliceSequence(const QVector<CeyearPscFrame> &frames) const;
     QVector<PscWidebandAlert> update(const CeyearPscFrame &frame);
     void reset();
 

@@ -468,11 +468,19 @@ void SweepPage::startOfflineReplay(const QVector<CeyearPscFrame> &frames, const 
         config.segments = {{minimumFrequencyHz, maximumFrequencyHz, maximumFrequencyHz - minimumFrequencyHz}};
     }
     resetPscVisualization(config);
+    const QVector<PscWidebandAlert> offlineAlerts = m_widebandAlertDetector.classifyOfflineSliceSequence(frames);
     m_offlineReplayFrames = frames;
     m_nextOfflineReplayFrame = 0;
     m_pscFrameCount = 0;
     m_offlineReplayActive = true;
     m_pscSweepMessage = QStringLiteral("离线演示回放：%1").arg(QFileInfo(sourcePath).fileName());
+    if (!offlineAlerts.isEmpty()) {
+        const auto strongestAlert = std::max_element(offlineAlerts.cbegin(), offlineAlerts.cend(),
+                                                     [](const PscWidebandAlert &left, const PscWidebandAlert &right) {
+                                                         return left.peakLevelDbuv < right.peakLevelDbuv;
+                                                     });
+        showWidebandAlert(*strongestAlert);
+    }
     if (m_startButton) {
         m_startButton->setEnabled(false);
     }
@@ -816,7 +824,7 @@ void SweepPage::appendPscFrame(const CeyearPscFrame &frame)
 
     m_candidateExtractor.update(frame);
     const QVector<PscWidebandAlert> alerts = m_offlineReplayActive
-        ? m_widebandAlertDetector.classifyFrame(frame)
+        ? QVector<PscWidebandAlert>()
         : m_widebandAlertDetector.update(frame);
     if (!alerts.isEmpty()) {
         const auto strongestAlert = std::max_element(alerts.cbegin(), alerts.cend(),

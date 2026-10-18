@@ -168,6 +168,181 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyFrame(const CeyearPs
     return currentAlerts;
 }
 
+QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyOfflineSliceSequence(
+    const QVector<CeyearPscFrame> &frames) const
+{
+    struct SliceHit {
+        int frameIndex = 0;
+        double startHz = 0.0;
+        double stopHz = 0.0;
+        double peakLevelDbuv = 0.0;
+        double noiseDbuv = 0.0;
+    };
+    struct Event {
+        QVector<SliceHit> hits;
+        int lastFrameIndex = 0;
+    };
+
+    QVector<SliceHit> hits;
+    QVector<double> sliceStarts;
+    double typicalStepHz = 0.0;
+    for (int frameIndex = 0; frameIndex < frames.size(); ++frameIndex) {
+        QVector<CeyearPscBin> bins;
+        for (const CeyearPscBin &bin : frames.at(frameIndex).bins) {
+            if (std::isfinite(bin.frequencyHz) && std::isfinite(bin.levelDbuv)) {
+                bins.append(bin);
+            }
+        }
+        std::sort(bins.begin(), bins.end(), [](const CeyearPscBin &left, const CeyearPscBin &right) {
+            return left.frequencyHz < right.frequencyHz;
+        });
+        if (bins.size() < 2) {
+            continue;
+        }
+        sliceStarts.append(bins.first().frequencyHz);
+        QVector<double> levels;
+        levels.reserve(bins.size());
+        for (const CeyearPscBin &bin : bins) {
+            levels.append(bin.levelDbuv);
+        }
+        const double noiseDbuv = median(levels);
+        QVector<double> gaps;
+        for (int index = 1; index < bins.size(); ++index) {
+            const double gapHz = bins.at(index).frequencyHz - bins.at(index - 1).frequencyHz;
+            if (gapHz > 0.0) {
+                gaps.append(gapHz);
+            }
+        }
+        const double stepHz = median(gaps);
+        if (!std::isfinite(stepHz) || stepHz <= 0.0) {
+            continue;
+        }
+        typicalStepHz = typicalStepHz > 0.0 ? (std::min)(typicalStepHz, stepHz) : stepHz;
+        const double maximumGapHz = (std::max)(stepHz * 1.5, 25000.0);
+        QVector<CeyearPscBin> run;
+        const auto appendRun = [&]() {
+            if (run.size() < 2) {
+                run.clear();
+                return;
+            }
+            const auto peak = std::max_element(run.cbegin(), run.cend(), [](const CeyearPscBin &left, const CeyearPscBin &right) {
+                return left.levelDbuv < right.levelDbuv;
+            });
+            hits.append({frameIndex, run.first().frequencyHz, run.last().frequencyHz, peak->levelDbuv, noiseDbuv});
+            run.clear();
+        };
+        for (const CeyearPscBin &bin : bins) {
+            if (bin.levelDbuv < noiseDbuv + RelativeNoiseRiseDb) {
+                appendRun();
+                continue;
+            }
+            if (!run.isEmpty() && bin.frequencyHz - run.last().frequencyHz > maximumGapHz) {
+                appendRun();
+            }
+            run.append(bin);
+        }
+        appendRun();
+    }
+
+    if (hits.isEmpty() || sliceStarts.size() < 2) {
+        return {};
+    }
+    int cycleLength = 1;
+    const double startToleranceHz = (std::max)(typicalStepHz * 2.0, 100000.0);
+    for (int period = 1; period <= (std::min)(32, sliceStarts.size() / 2); ++period) {
+        int matches = 0;
+        const int comparisons = sliceStarts.size() - period;
+        for (int index = period; index < sliceStarts.size(); ++index) {
+            if (qAbs(sliceStarts.at(index) - sliceStarts.at(index - period)) <= startToleranceHz) {
+                ++matches;
+            }
+        }
+        if (comparisons > 0 && matches * 100 >= comparisons * 95) {
+            cycleLength = period;
+            break;
+        }
+    }
+
+    QVector<Event> events;
+    const int maximumFrameGap = (std::max)(2, cycleLength * 2);
+    const double frequencyToleranceHz = (std::max)(typicalStepHz * 2.0, 250000.0);
+    for (const SliceHit &hit : hits) {
+        int bestEvent = -1;
+        double bestGapHz = std::numeric_limits<double>::infinity();
+        for (int index = 0; index < events.size(); ++index) {
+            const Event &event = events.at(index);
+            if (hit.frameIndex - event.lastFrameIndex > maximumFrameGap) {
+                continue;
+            }
+            double eventStartHz = event.hits.first().startHz;
+            double eventStopHz = event.hits.first().stopHz;
+            for (const SliceHit &eventHit : event.hits) {
+                eventStartHz = (std::min)(eventStartHz, eventHit.startHz);
+                eventStopHz = (std::max)(eventStopHz, eventHit.stopHz);
+            }
+            const double gapHz = hit.startHz > eventStopHz ? hit.startHz - eventStopHz
+                : eventStartHz > hit.stopHz ? eventStartHz - hit.stopHz : 0.0;
+            if (gapHz <= frequencyToleranceHz && gapHz < bestGapHz) {
+                bestGapHz = gapHz;
+                bestEvent = index;
+            }
+        }
+        if (bestEvent < 0) {
+            events.append({{hit}, hit.frameIndex});
+        } else {
+            events[bestEvent].hits.append(hit);
+            events[bestEvent].lastFrameIndex = hit.frameIndex;
+        }
+    }
+
+    QVector<PscWidebandAlert> alerts;
+    for (const Event &event : events) {
+        if (event.hits.size() < 3) {
+            continue;
+        }
+        double startHz = event.hits.first().startHz;
+        double stopHz = event.hits.first().stopHz;
+        double peakLevelDbuv = event.hits.first().peakLevelDbuv;
+        double marginTotalDb = 0.0;
+        for (const SliceHit &hit : event.hits) {
+            startHz = (std::min)(startHz, hit.startHz);
+            stopHz = (std::max)(stopHz, hit.stopHz);
+            peakLevelDbuv = (std::max)(peakLevelDbuv, hit.peakLevelDbuv);
+            marginTotalDb += hit.peakLevelDbuv - hit.noiseDbuv;
+        }
+        const double observedBandwidthHz = stopHz - startHz;
+        if (observedBandwidthHz < 1000000.0
+            || marginTotalDb / event.hits.size() < RelativeNoiseRiseDb) {
+            continue;
+        }
+        const double observedBandwidthMhz = observedBandwidthHz / 1000000.0;
+        const PscWidebandRule *matchedRule = nullptr;
+        double bestDistanceMhz = std::numeric_limits<double>::infinity();
+        for (const PscWidebandRule &rule : m_rules) {
+            const double nominalMhz = (rule.minimumBandwidthHz + rule.maximumBandwidthHz) / 2000000.0;
+            const double distanceMhz = qAbs(observedBandwidthMhz - nominalMhz);
+            if (distanceMhz < bestDistanceMhz) {
+                bestDistanceMhz = distanceMhz;
+                matchedRule = &rule;
+            }
+        }
+        if (!matchedRule) {
+            continue;
+        }
+        const double nominalBandwidthHz = (matchedRule->minimumBandwidthHz + matchedRule->maximumBandwidthHz) / 2.0;
+        const double centerHz = (startHz + stopHz) / 2.0;
+        alerts.append({centerHz - nominalBandwidthHz / 2.0,
+                       centerHz + nominalBandwidthHz / 2.0,
+                       centerHz,
+                       nominalBandwidthHz,
+                       peakLevelDbuv,
+                       event.hits.size(),
+                       (std::max)(25000.0, typicalStepHz * 2.0),
+                       matchedRule->bandwidthClass});
+    }
+    return alerts;
+}
+
 QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame &frame)
 {
     QVector<PscWidebandAlert> currentAlerts = classifyFrame(frame);
