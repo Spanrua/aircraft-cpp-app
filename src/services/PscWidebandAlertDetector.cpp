@@ -304,11 +304,14 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyOfflineSliceSequence
         double stopHz = event.hits.first().stopHz;
         double peakLevelDbuv = event.hits.first().peakLevelDbuv;
         double marginTotalDb = 0.0;
+        QVector<double> hitCentersHz;
+        hitCentersHz.reserve(event.hits.size());
         for (const SliceHit &hit : event.hits) {
             startHz = (std::min)(startHz, hit.startHz);
             stopHz = (std::max)(stopHz, hit.stopHz);
             peakLevelDbuv = (std::max)(peakLevelDbuv, hit.peakLevelDbuv);
             marginTotalDb += hit.peakLevelDbuv - hit.noiseDbuv;
+            hitCentersHz.append((hit.startHz + hit.stopHz) / 2.0);
         }
         const double observedBandwidthHz = stopHz - startHz;
         if (observedBandwidthHz < 1000000.0
@@ -347,7 +350,7 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyOfflineSliceSequence
             continue;
         }
         const double nominalBandwidthHz = (matchedRule->minimumBandwidthHz + matchedRule->maximumBandwidthHz) / 2.0;
-        const double centerHz = (startHz + stopHz) / 2.0;
+        const double centerHz = median(hitCentersHz);
         alerts.append({centerHz - nominalBandwidthHz / 2.0,
                        centerHz + nominalBandwidthHz / 2.0,
                        centerHz,
