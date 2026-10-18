@@ -93,6 +93,8 @@ private slots:
     void pscWidebandAlertAcceptsSmallCenterFrequencyShift();
     void pscWidebandAlertUsesLargestResolutionTolerance();
     void pscWidebandAlertTracksMultipleBandsIndependently();
+    void pscWidebandAlertClassifiesConfiguredBandwidthRanges();
+    void pscWidebandAlertDoesNotMergeDifferentBandwidthClasses();
     void ceyearPscSweepCsvWriterPersistsFrameBins();
     void ceyearPscSweepCsvReaderRestoresSortedFrames();
     void ceyearPscSweepCsvReaderSkipsZeroFrequencySentinelBins();
@@ -1894,6 +1896,46 @@ void ServiceTests::pscWidebandAlertTracksMultipleBandsIndependently()
     QCOMPARE(alerts.at(1).centerHz, 5839500000.0);
     QCOMPARE(alerts.at(0).consecutiveFrameCount, 2);
     QCOMPARE(alerts.at(1).consecutiveFrameCount, 2);
+}
+
+void ServiceTests::pscWidebandAlertClassifiesConfiguredBandwidthRanges()
+{
+    struct Case { int megahertz; QString expectedClass; bool accepted; };
+    const QVector<Case> cases = {
+        {8, QStringLiteral("10M"), true}, {12, QStringLiteral("10M"), true},
+        {13, {}, false}, {15, {}, false},
+        {16, QStringLiteral("20M"), true}, {24, QStringLiteral("20M"), true},
+        {25, {}, false}, {31, {}, false},
+        {32, QStringLiteral("40M"), true}, {48, QStringLiteral("40M"), true},
+        {49, {}, false}
+    };
+
+    for (const Case &testCase : cases) {
+        PscWidebandAlertDetector detector(-60.0);
+        const CeyearPscFrame frame = pscWidebandFrame(5800000000.0, testCase.megahertz, 1000000.0);
+        QVERIFY(detector.update(frame).isEmpty());
+        const QVector<PscWidebandAlert> alerts = detector.update(frame);
+        if (!testCase.accepted) {
+            QVERIFY(alerts.isEmpty());
+            continue;
+        }
+        QCOMPARE(alerts.size(), 1);
+        QCOMPARE(alerts.first().bandwidthClass, testCase.expectedClass);
+    }
+}
+
+void ServiceTests::pscWidebandAlertDoesNotMergeDifferentBandwidthClasses()
+{
+    PscWidebandAlertDetector detector(-60.0);
+    const CeyearPscFrame twentyMegahertz = pscWidebandFrame(5800000000.0, 20, 1000000.0);
+    const CeyearPscFrame fortyMegahertz = pscWidebandFrame(5790000000.0, 40, 1000000.0);
+
+    QVERIFY(detector.update(twentyMegahertz).isEmpty());
+    QVERIFY(detector.update(fortyMegahertz).isEmpty());
+    const QVector<PscWidebandAlert> alerts = detector.update(fortyMegahertz);
+    QCOMPARE(alerts.size(), 1);
+    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("40M"));
+    QCOMPARE(alerts.first().consecutiveFrameCount, 2);
 }
 
 void ServiceTests::ceyearPscSweepCsvWriterPersistsFrameBins()

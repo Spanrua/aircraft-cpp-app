@@ -424,6 +424,7 @@ private slots:
     void sweepPageShowsPscStartFailure();
     void sweepPageUpdatesWaterfallAndCandidatesFromPscFrame();
     void sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity();
+    void sweepPageShowsWidebandAlertClasses();
     void sweepPageMergesDriftingWidebandAlertHistory();
     void sweepPageMergesWidebandHistoryAcrossResolutionChanges();
     void sweepPageResetClearsWidebandAlert();
@@ -1132,12 +1133,43 @@ void UiTests::sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity()
     bool foundAlert = false;
     for (int row = 0; row < candidateTable->rowCount(); ++row) {
         const QTableWidgetItem *stateItem = candidateTable->item(row, 4);
-        if (stateItem && stateItem->text() == QStringLiteral("告警")) {
+        if (stateItem && stateItem->text().startsWith(QStringLiteral("告警·"))) {
             foundAlert = true;
             QCOMPARE(candidateTable->item(row, 3)->text(), QStringLiteral("21.0"));
         }
     }
     QVERIFY(foundAlert);
+}
+
+void UiTests::sweepPageShowsWidebandAlertClasses()
+{
+    struct Case { int binCount; QString bandwidthClass; };
+    const QVector<Case> cases = {{10, QStringLiteral("10M")}, {20, QStringLiteral("20M")}, {40, QStringLiteral("40M")}};
+
+    for (const Case &testCase : cases) {
+        SweepPage page;
+        auto *alertLabel = page.findChild<QLabel *>(QStringLiteral("PscWidebandAlertLabel"));
+        auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+        QVERIFY(alertLabel != nullptr);
+        QVERIFY(candidateTable != nullptr);
+
+        CeyearPscFrame frame;
+        for (int index = 0; index < testCase.binCount; ++index) {
+            frame.bins.append({2400000000.0 + index * 1000000.0, -35.0});
+        }
+        page.appendPscFrameForTest(frame);
+        page.appendPscFrameForTest(frame);
+
+        QVERIFY(alertLabel->text().contains(QStringLiteral("（%1）").arg(testCase.bandwidthClass)));
+        bool foundClass = false;
+        for (int row = 0; row < candidateTable->rowCount(); ++row) {
+            const QTableWidgetItem *stateItem = candidateTable->item(row, 4);
+            if (stateItem && stateItem->text() == QStringLiteral("告警·%1").arg(testCase.bandwidthClass)) {
+                foundClass = true;
+            }
+        }
+        QVERIFY(foundClass);
+    }
 }
 
 void UiTests::sweepPageMergesDriftingWidebandAlertHistory()
@@ -1162,7 +1194,7 @@ void UiTests::sweepPageMergesDriftingWidebandAlertHistory()
     int alertRows = 0;
     for (int row = 0; row < candidateTable->rowCount(); ++row) {
         const QTableWidgetItem *stateItem = candidateTable->item(row, 4);
-        if (stateItem && stateItem->text() == QStringLiteral("告警")) {
+        if (stateItem && stateItem->text().startsWith(QStringLiteral("告警·"))) {
             ++alertRows;
             QCOMPARE(candidateTable->item(row, 2)->text(), QStringLiteral("3"));
         }
@@ -1192,7 +1224,7 @@ void UiTests::sweepPageMergesWidebandHistoryAcrossResolutionChanges()
     int alertRows = 0;
     for (int row = 0; row < candidateTable->rowCount(); ++row) {
         const QTableWidgetItem *stateItem = candidateTable->item(row, 4);
-        if (stateItem && stateItem->text() == QStringLiteral("告警")) {
+        if (stateItem && stateItem->text().startsWith(QStringLiteral("告警·"))) {
             ++alertRows;
             QCOMPARE(candidateTable->item(row, 2)->text(), QStringLiteral("3"));
         }

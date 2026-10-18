@@ -21,14 +21,24 @@ PscWidebandAlertDetector::PscWidebandAlertDetector(double hitThresholdDbuv,
                                                    double maximumBandwidthHz,
                                                    int requiredConsecutiveFrames)
     : m_hitThresholdDbuv(std::isfinite(hitThresholdDbuv) ? hitThresholdDbuv : DefaultHitThresholdDbuv)
-    , m_minimumBandwidthHz(minimumBandwidthHz)
-    , m_maximumBandwidthHz(maximumBandwidthHz)
     , m_requiredConsecutiveFrames((std::max)(2, requiredConsecutiveFrames))
 {
-    if (!isValidBandwidthRange(m_minimumBandwidthHz, m_maximumBandwidthHz)) {
-        m_minimumBandwidthHz = DefaultMinimumBandwidthHz;
-        m_maximumBandwidthHz = DefaultMaximumBandwidthHz;
+    if (minimumBandwidthHz == DefaultMinimumBandwidthHz && maximumBandwidthHz == DefaultMaximumBandwidthHz) {
+        m_rules = defaultRules();
+    } else if (isValidBandwidthRange(minimumBandwidthHz, maximumBandwidthHz)) {
+        m_rules = {{QStringLiteral("自定义"), minimumBandwidthHz, maximumBandwidthHz}};
+    } else {
+        m_rules = defaultRules();
     }
+}
+
+QVector<PscWidebandRule> PscWidebandAlertDetector::defaultRules()
+{
+    return {
+        {QStringLiteral("10M"), 8000000.0, 12000000.0},
+        {QStringLiteral("20M"), 16000000.0, 24000000.0},
+        {QStringLiteral("40M"), 32000000.0, 48000000.0}
+    };
 }
 
 QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame &frame)
@@ -67,8 +77,12 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame 
             band.stopHz = lastFrequencyHz;
             band.centerHz = (band.startHz + band.stopHz) / 2.0;
             band.bandwidthHz = band.stopHz - band.startHz + binStepHz;
-            if (band.bandwidthHz >= m_minimumBandwidthHz && band.bandwidthHz <= m_maximumBandwidthHz) {
-                currentAlerts.append(band);
+            for (const PscWidebandRule &rule : m_rules) {
+                if (band.bandwidthHz >= rule.minimumBandwidthHz && band.bandwidthHz <= rule.maximumBandwidthHz) {
+                    band.bandwidthClass = rule.bandwidthClass;
+                    currentAlerts.append(band);
+                    break;
+                }
             }
         };
 
@@ -108,7 +122,8 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::update(const CeyearPscFrame 
             const double differenceHz = std::abs(alert.centerHz - m_previousAlerts.at(index).centerHz);
             const double previousToleranceHz = m_previousAlerts.at(index).centerToleranceHz;
             const double matchingToleranceHz = (std::max)(currentToleranceHz, previousToleranceHz);
-            if (differenceHz <= matchingToleranceHz && differenceHz < closestDifferenceHz) {
+            if (alert.bandwidthClass == m_previousAlerts.at(index).bandwidthClass
+                && differenceHz <= matchingToleranceHz && differenceHz < closestDifferenceHz) {
                 closestPrevious = index;
                 closestDifferenceHz = differenceHz;
             }

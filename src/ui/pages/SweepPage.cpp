@@ -850,7 +850,8 @@ void SweepPage::setCandidateRows(const QVector<CeyearPscCandidate> &candidates)
         m_candidateTable->setItem(row, 1, centeredItem(QString::number(alert.peakLevelDbuv, 'f', 1)));
         m_candidateTable->setItem(row, 2, centeredItem(QString::number(alert.consecutiveFrameCount)));
         m_candidateTable->setItem(row, 3, centeredItem(QString::number(alert.bandwidthHz / 1000000.0, 'f', 1)));
-        m_candidateTable->setItem(row, 4, centeredItem(QStringLiteral("告警")));
+        m_candidateTable->setItem(row, 4, centeredItem(
+            QStringLiteral("告警·%1").arg(alert.bandwidthClass)));
 
         for (int column = 0; column < m_candidateTable->columnCount(); ++column) {
             QTableWidgetItem *item = m_candidateTable->item(row, column);
@@ -868,7 +869,8 @@ void SweepPage::showWidebandAlert(const PscWidebandAlert &alert)
     }
     if (m_widebandAlertLabel) {
         m_widebandAlertLabel->setText(
-            QStringLiteral("⚠ 疑似无人机宽带信号：中心 %1 GHz｜带宽 %2 MHz｜峰值 %3 dBuV")
+            QStringLiteral("⚠ 疑似无人机宽带信号（%1）：中心 %2 GHz｜带宽 %3 MHz｜峰值 %4 dBuV")
+                .arg(alert.bandwidthClass)
                 .arg(QString::number(alert.centerHz / 1000000000.0, 'f', 6))
                 .arg(QString::number(alert.bandwidthHz / 1000000.0, 'f', 1))
                 .arg(QString::number(alert.peakLevelDbuv, 'f', 1)));
@@ -886,7 +888,8 @@ void SweepPage::recordWidebandAlert(const PscWidebandAlert &alert)
             ? recordedAlert.centerToleranceHz
             : 25000.0;
         const double matchingCenterToleranceHz = (std::max)(alertToleranceHz, recordedToleranceHz);
-        if (qAbs(recordedAlert.centerHz - alert.centerHz) <= matchingCenterToleranceHz) {
+        if (recordedAlert.bandwidthClass == alert.bandwidthClass
+            && qAbs(recordedAlert.centerHz - alert.centerHz) <= matchingCenterToleranceHz) {
             recordedAlert = alert;
             return;
         }
