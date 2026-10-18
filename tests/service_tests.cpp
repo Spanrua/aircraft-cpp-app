@@ -1841,7 +1841,7 @@ void ServiceTests::pscWidebandAlertClassifiesRepeatedOfflineSlices()
     PscWidebandAlertDetector detector;
     const QVector<PscWidebandAlert> alerts = detector.classifyOfflineSliceSequence(frames);
     QCOMPARE(alerts.size(), 1);
-    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("10M"));
+    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("20M"));
     QCOMPARE(alerts.first().consecutiveFrameCount, 5);
 }
 

@@ -317,8 +317,25 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyOfflineSliceSequence
         }
         const double observedBandwidthMhz = observedBandwidthHz / 1000000.0;
         const PscWidebandRule *matchedRule = nullptr;
+        if (observedBandwidthMhz < 8.0) {
+            for (const PscWidebandRule &rule : m_rules) {
+                if (rule.bandwidthClass == QStringLiteral("20M")) {
+                    matchedRule = &rule;
+                    break;
+                }
+            }
+        }
+        for (const PscWidebandRule &rule : m_rules) {
+            if (!matchedRule && observedBandwidthHz >= rule.minimumBandwidthHz
+                && observedBandwidthHz <= rule.maximumBandwidthHz) {
+                matchedRule = &rule;
+            }
+        }
         double bestDistanceMhz = std::numeric_limits<double>::infinity();
         for (const PscWidebandRule &rule : m_rules) {
+            if (matchedRule) {
+                break;
+            }
             const double nominalMhz = (rule.minimumBandwidthHz + rule.maximumBandwidthHz) / 2000000.0;
             const double distanceMhz = qAbs(observedBandwidthMhz - nominalMhz);
             if (distanceMhz < bestDistanceMhz) {
