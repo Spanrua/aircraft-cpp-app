@@ -24,6 +24,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -48,6 +49,7 @@ private slots:
     void preprocessResponseParserKeepsSegmentsAndLogs();
     void preprocessRequestSerializesRealControls();
     void preprocessRunnerExecutesBridgeScript();
+    void preprocessRunnerReportsAsyncBridgeFailureOutput();
     void preprocessRunnerTimesOutHungProcess();
     void preprocessFailureResponseDoesNotBuildSamples();
     void preprocessSampleRecordsKeepNpzWindowMetadata();
@@ -713,6 +715,35 @@ response_path.write_text(json.dumps(response, ensure_ascii=False), encoding="utf
     QCOMPARE(QDir::cleanPath(result->sampleRecords.first().sampleFilePath), QDir::cleanPath(outputSamplePath));
     QCOMPARE(result->sampleRecords.first().sampleIndex, 0);
     QCOMPARE(result->sampleRecords.first().dataFormat, QStringLiteral("npz_iq_float32"));
+}
+
+void ServiceTests::preprocessRunnerReportsAsyncBridgeFailureOutput()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString inputCapPath = dir.filePath("input.cap");
+    QFile capFile(inputCapPath);
+    QVERIFY(capFile.open(QIODevice::WriteOnly));
+    capFile.write("dummy");
+    capFile.close();
+
+    const QString runnerScriptPath = dir.filePath("failing_runner.py");
+    QFile runnerScript(runnerScriptPath);
+    QVERIFY(runnerScript.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    runnerScript.write("import sys\nprint('bridge import failed', file=sys.stderr)\nraise SystemExit(3)\n");
+    runnerScript.close();
+
+    PreprocessRequest request;
+    request.inputFilePath = inputCapPath;
+    request.sampleOutputDir = dir.filePath("out");
+
+    PreprocessProcessRunner runner;
+    QSignalSpy failureSpy(&runner, &PreprocessProcessRunner::failed);
+    QVERIFY(runner.start(request, {}, QStringLiteral("python"), runnerScriptPath));
+    QVERIFY(failureSpy.wait(5000));
+    QCOMPARE(failureSpy.count(), 1);
+    QVERIFY(failureSpy.takeFirst().at(0).toString().contains(QStringLiteral("bridge import failed")));
 }
 
 void ServiceTests::preprocessRunnerTimesOutHungProcess()
