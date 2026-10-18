@@ -102,6 +102,7 @@ private slots:
     void pscWidebandAlertClassifiesRepeatedOfflineSlices();
     void pscWidebandAlertRanksPersistentOfflineSignalBeforeBriefPeak();
     void pscWidebandAlertUsesMedianCenterForRepeatedOfflineSlice();
+    void pscWidebandAlertUsesCycleNoiseForCrossSliceSignal();
     void ceyearPscSweepCsvWriterPersistsFrameBins();
     void ceyearPscSweepCsvReaderRestoresSortedFrames();
     void ceyearPscSweepCsvReaderSkipsZeroFrequencySentinelBins();
@@ -1857,9 +1858,9 @@ void ServiceTests::pscWidebandAlertRanksPersistentOfflineSignalBeforeBriefPeak()
         for (int index = 0; index < 20; ++index) {
             const double offsetHz = index * 500000.0;
             briefPeakSlice.bins.append({5740000000.0 + offsetHz,
-                                        cycle < 3 && index >= 4 && index < 12 ? 40.0 : 0.0});
+                                        cycle < 3 && index >= 1 && index < 19 ? 40.0 : 0.0});
             persistentSignalSlice.bins.append({5800000000.0 + offsetHz,
-                                               index >= 4 && index < 12 ? 25.0 : 0.0});
+                                               index >= 1 && index < 19 ? 25.0 : 0.0});
             quietSlice.bins.append({5810000000.0 + offsetHz, 0.0});
         }
         frames.append(briefPeakSlice);
@@ -1872,7 +1873,7 @@ void ServiceTests::pscWidebandAlertRanksPersistentOfflineSignalBeforeBriefPeak()
 
     QCOMPARE(alerts.size(), 2);
     QCOMPARE(alerts.first().consecutiveFrameCount, 5);
-    QVERIFY(qAbs(alerts.first().centerHz - 5803750000.0) < 1000000.0);
+    QVERIFY(qAbs(alerts.first().centerHz - 5804750000.0) < 1000000.0);
     QVERIFY(alerts.first().peakLevelDbuv < alerts.at(1).peakLevelDbuv);
 }
 
@@ -1900,6 +1901,31 @@ void ServiceTests::pscWidebandAlertUsesMedianCenterForRepeatedOfflineSlice()
     QCOMPARE(alerts.size(), 1);
     QCOMPARE(alerts.first().consecutiveFrameCount, 5);
     QVERIFY(qAbs(alerts.first().centerHz - 5802750000.0) < 100000.0);
+}
+
+void ServiceTests::pscWidebandAlertUsesCycleNoiseForCrossSliceSignal()
+{
+    QVector<CeyearPscFrame> frames;
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        for (int slice = 0; slice < 11; ++slice) {
+            CeyearPscFrame frame;
+            const double sliceStartHz = 5725000000.0 + slice * 10000000.0;
+            for (int index = 0; index < 20; ++index) {
+                const double frequencyHz = sliceStartHz + index * 500000.0;
+                const bool inWideSignal = frequencyHz >= 5788500000.0 && frequencyHz <= 5806500000.0;
+                frame.bins.append({frequencyHz, inWideSignal ? 30.0 : 0.0});
+            }
+            frames.append(frame);
+        }
+    }
+
+    PscWidebandAlertDetector detector;
+    const QVector<PscWidebandAlert> alerts = detector.classifyOfflineSliceSequence(frames);
+
+    QCOMPARE(alerts.size(), 1);
+    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("20M"));
+    QCOMPARE(alerts.first().consecutiveFrameCount, 5);
+    QVERIFY(qAbs(alerts.first().centerHz - 5797500000.0) < 250000.0);
 }
 
 void ServiceTests::pscWidebandAlertRejectsNonFiniteHitThreshold()
