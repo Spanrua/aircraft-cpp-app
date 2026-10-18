@@ -181,6 +181,7 @@ void SweepPage::buildUi()
     layout->setSpacing(12);
 
     auto *segmentGroup = new QGroupBox(QStringLiteral("扫频频段"), this);
+    segmentGroup->setMaximumWidth(360);
     auto *segmentLayout = new QVBoxLayout(segmentGroup);
     m_segmentTable = new QTableWidget(0, 3, segmentGroup);
     m_segmentTable->setObjectName(QStringLiteral("SweepSegmentTable"));
@@ -226,7 +227,7 @@ void SweepPage::buildUi()
     m_statusLabel->setObjectName(QStringLiteral("PscSweepStatusLabel"));
     m_statusLabel->setWordWrap(true);
     segmentLayout->addWidget(m_statusLabel);
-    layout->addWidget(segmentGroup, 0);
+    layout->addWidget(segmentGroup, 2);
 
     auto *waterfallGroup = new QGroupBox(QStringLiteral("PSC 时频图"), this);
     auto *waterfallLayout = new QVBoxLayout(waterfallGroup);
@@ -241,9 +242,10 @@ void SweepPage::buildUi()
     m_waterfall = new WaterfallWidget(waterfallGroup);
     m_waterfall->setObjectName(QStringLiteral("PscWaterfallWidget"));
     waterfallLayout->addWidget(m_waterfall, 1);
-    layout->addWidget(waterfallGroup, 1);
+    layout->addWidget(waterfallGroup, 6);
 
     auto *candidateGroup = new QGroupBox(QStringLiteral("候选信号"), this);
+    candidateGroup->setMinimumWidth(410);
     auto *candidateLayout = new QVBoxLayout(candidateGroup);
     m_candidateTable = new QTableWidget(0, 5, candidateGroup);
     m_candidateTable->setObjectName(QStringLiteral("PscCandidateTable"));
@@ -254,7 +256,12 @@ void SweepPage::buildUi()
         QStringLiteral("带宽 MHz"),
         QStringLiteral("状态"),
     });
-    m_candidateTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    auto *candidateHeader = m_candidateTable->horizontalHeader();
+    for (int column = 0; column < 4; ++column) {
+        candidateHeader->setSectionResizeMode(column, QHeaderView::Stretch);
+    }
+    candidateHeader->setSectionResizeMode(4, QHeaderView::Fixed);
+    m_candidateTable->setColumnWidth(4, 104);
     m_candidateTable->verticalHeader()->setVisible(false);
     m_candidateTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_candidateTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -264,7 +271,7 @@ void SweepPage::buildUi()
     m_confirmButton->setObjectName(QStringLiteral("ConfirmPscCandidateButton"));
     m_confirmButton->setProperty("primary", true);
     candidateLayout->addWidget(m_confirmButton);
-    layout->addWidget(candidateGroup, 0);
+    layout->addWidget(candidateGroup, 3);
 
     contentLayout()->addLayout(layout, 1);
     seedDefaultSegments();

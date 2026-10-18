@@ -84,7 +84,10 @@ private slots:
     void pscWidebandAlertRejectsBandsBelowMinimumWidth();
     void pscWidebandAlertRejectsBandsAboveMaximumWidth();
     void pscWidebandAlertAcceptsExactBandwidthBounds();
-    void pscWidebandAlertUsesConfiguredHitThreshold();
+    void pscWidebandAlertRequiresTenDbRiseAboveNoise();
+    void pscWidebandAlertFallsBackToFrameNoiseAtSweepEdge();
+    void pscWidebandAlertFallsBackWhenOnlyPartOfSidebandIsAvailable();
+    void pscWidebandAlertFallsBackWhenSidebandHasInternalGap();
     void pscWidebandAlertRejectsNonFiniteHitThreshold();
     void pscWidebandAlertNonFiniteThresholdFallsBackToDefault();
     void pscWidebandAlertNormalizesInvalidBandwidthRange();
@@ -1671,9 +1674,16 @@ void ServiceTests::ceyearPscCandidateExtractorUsesConfiguredHitThreshold()
 static CeyearPscFrame pscWidebandFrame(double startHz, int binCount, double binStepHz)
 {
     CeyearPscFrame frame;
-    frame.bins.reserve(binCount);
+    const int sidebandBinCount = (std::max)(2, (binCount + 4) / 5);
+    frame.bins.reserve(binCount + sidebandBinCount * 2);
+    for (int index = sidebandBinCount; index > 0; --index) {
+        frame.bins.append({startHz - index * binStepHz, -80.0});
+    }
     for (int index = 0; index < binCount; ++index) {
         frame.bins.append({startHz + index * binStepHz, -35.0});
+    }
+    for (int index = 1; index <= sidebandBinCount; ++index) {
+        frame.bins.append({startHz + (binCount - 1 + index) * binStepHz, -80.0});
     }
     return frame;
 }
@@ -1736,31 +1746,89 @@ void ServiceTests::pscWidebandAlertAcceptsExactBandwidthBounds()
     QCOMPARE(detector.update(maximumWidth).first().bandwidthHz, 24000000.0);
 }
 
-void ServiceTests::pscWidebandAlertUsesConfiguredHitThreshold()
+void ServiceTests::pscWidebandAlertRequiresTenDbRiseAboveNoise()
 {
-    CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
-    for (CeyearPscBin &bin : frame.bins) {
-        bin.levelDbuv = -61.0;
+    constexpr int binCount = 10;
+    const int sidebandBinCount = (std::max)(2, (binCount + 4) / 5);
+    CeyearPscFrame belowThreshold = pscWidebandFrame(5800000000.0, binCount, 1000000.0);
+    for (int index = sidebandBinCount; index < sidebandBinCount + binCount; ++index) {
+        belowThreshold.bins[index].levelDbuv = -70.1;
     }
 
     PscWidebandAlertDetector detector(-60.0);
-    QVERIFY(detector.update(frame).isEmpty());
-    QVERIFY(detector.update(frame).isEmpty());
+    QVERIFY(detector.classifyFrame(belowThreshold).isEmpty());
 
-    CeyearPscFrame thresholdFrame = frame;
-    for (CeyearPscBin &bin : thresholdFrame.bins) {
-        bin.levelDbuv = -60.0;
+    CeyearPscFrame atThreshold = belowThreshold;
+    for (int index = sidebandBinCount; index < sidebandBinCount + binCount; ++index) {
+        atThreshold.bins[index].levelDbuv = -70.0;
     }
-    detector.reset();
-    QVERIFY(detector.update(thresholdFrame).isEmpty());
-    QCOMPARE(detector.update(thresholdFrame).size(), 1);
+    const QVector<PscWidebandAlert> alerts = detector.classifyFrame(atThreshold);
+    QCOMPARE(alerts.size(), 1);
+    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("10M"));
+}
+
+void ServiceTests::pscWidebandAlertFallsBackToFrameNoiseAtSweepEdge()
+{
+    CeyearPscFrame frame;
+    frame.bins.reserve(15);
+    for (int index = 0; index < 10; ++index) {
+        frame.bins.append({5800000000.0 + index * 1000000.0, -70.0});
+    }
+    for (int index = 10; index < 15; ++index) {
+        frame.bins.append({5800000000.0 + index * 1000000.0, -80.0});
+    }
+
+    PscWidebandAlertDetector detector;
+    const QVector<PscWidebandAlert> alerts = detector.classifyFrame(frame);
+    QCOMPARE(alerts.size(), 1);
+    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("10M"));
+}
+
+void ServiceTests::pscWidebandAlertFallsBackWhenOnlyPartOfSidebandIsAvailable()
+{
+    CeyearPscFrame frame;
+    frame.bins.append({5799500000.0, -75.0});
+    for (int index = 0; index < 20; ++index) {
+        frame.bins.append({5800000000.0 + index * 500000.0, -70.0});
+    }
+    for (int index = 10; index < 20; ++index) {
+        frame.bins.append({5810500000.0 + (index - 10) * 500000.0, -80.0});
+    }
+
+    PscWidebandAlertDetector detector;
+    const QVector<PscWidebandAlert> alerts = detector.classifyFrame(frame);
+    QCOMPARE(alerts.size(), 1);
+    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("10M"));
+}
+
+void ServiceTests::pscWidebandAlertFallsBackWhenSidebandHasInternalGap()
+{
+    constexpr double startHz = 5800000000.0;
+    constexpr double binStepHz = 100000.0;
+    CeyearPscFrame frame;
+    frame.bins.append({startHz - 1000000.0, -50.0});
+    for (int index = 0; index < 200; ++index) {
+        frame.bins.append({startHz + index * binStepHz, -70.0});
+    }
+    const double stopHz = startHz + 199 * binStepHz;
+    frame.bins.append({stopHz + 1000000.0, -50.0});
+    for (int index = 1; index <= 60; ++index) {
+        frame.bins.append({stopHz + 1000000.0 + index * binStepHz, -100.0});
+    }
+
+    PscWidebandAlertDetector detector;
+    const QVector<PscWidebandAlert> alerts = detector.classifyFrame(frame);
+    QCOMPARE(alerts.size(), 1);
+    QCOMPARE(alerts.first().bandwidthClass, QStringLiteral("20M"));
 }
 
 void ServiceTests::pscWidebandAlertRejectsNonFiniteHitThreshold()
 {
-    CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
-    for (CeyearPscBin &bin : frame.bins) {
-        bin.levelDbuv = -61.0;
+    constexpr int binCount = 20;
+    const int sidebandBinCount = (std::max)(2, (binCount + 4) / 5);
+    CeyearPscFrame frame = pscWidebandFrame(5800000000.0, binCount, 1000000.0);
+    for (int index = sidebandBinCount; index < sidebandBinCount + binCount; ++index) {
+        frame.bins[index].levelDbuv = -70.1;
     }
 
     PscWidebandAlertDetector nanDetector(std::numeric_limits<double>::quiet_NaN());
@@ -1774,16 +1842,13 @@ void ServiceTests::pscWidebandAlertRejectsNonFiniteHitThreshold()
 
 void ServiceTests::pscWidebandAlertNonFiniteThresholdFallsBackToDefault()
 {
-    CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
-    for (CeyearPscBin &bin : frame.bins) {
-        bin.levelDbuv = -60.0;
-    }
+    const CeyearPscFrame frame = pscWidebandFrame(5800000000.0, 20, 1000000.0);
 
     PscWidebandAlertDetector detector(std::numeric_limits<double>::quiet_NaN());
     QVERIFY(detector.update(frame).isEmpty());
     const QVector<PscWidebandAlert> alerts = detector.update(frame);
     QCOMPARE(alerts.size(), 1);
-    QCOMPARE(alerts.first().peakLevelDbuv, -60.0);
+    QCOMPARE(alerts.first().peakLevelDbuv, -35.0);
 }
 
 void ServiceTests::pscWidebandAlertNormalizesInvalidBandwidthRange()

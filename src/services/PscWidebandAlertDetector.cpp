@@ -14,15 +14,25 @@ bool isValidBandwidthRange(double minimumBandwidthHz, double maximumBandwidthHz)
         && maximumBandwidthHz >= minimumBandwidthHz;
 }
 
+double median(QVector<double> values)
+{
+    if (values.isEmpty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    std::sort(values.begin(), values.end());
+    const int middle = values.size() / 2;
+    return values.size() % 2 == 0 ? (values.at(middle - 1) + values.at(middle)) / 2.0 : values.at(middle);
+}
+
 } // namespace
 
 PscWidebandAlertDetector::PscWidebandAlertDetector(double hitThresholdDbuv,
                                                    double minimumBandwidthHz,
                                                    double maximumBandwidthHz,
                                                    int requiredConsecutiveFrames)
-    : m_hitThresholdDbuv(std::isfinite(hitThresholdDbuv) ? hitThresholdDbuv : DefaultHitThresholdDbuv)
-    , m_requiredConsecutiveFrames((std::max)(2, requiredConsecutiveFrames))
+    : m_requiredConsecutiveFrames((std::max)(2, requiredConsecutiveFrames))
 {
+    Q_UNUSED(hitThresholdDbuv)
     if (minimumBandwidthHz == DefaultMinimumBandwidthHz && maximumBandwidthHz == DefaultMaximumBandwidthHz) {
         m_rules = defaultRules();
     } else if (isValidBandwidthRange(minimumBandwidthHz, maximumBandwidthHz)) {
@@ -54,6 +64,15 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyFrame(const CeyearPs
         return left.frequencyHz < right.frequencyHz;
     });
 
+    QVector<double> frameLevels;
+    frameLevels.reserve(bins.size());
+    for (const CeyearPscBin &bin : bins) {
+        frameLevels.append(bin.levelDbuv);
+    }
+    std::sort(frameLevels.begin(), frameLevels.end());
+    const int lowestCount = (std::max)(1, static_cast<int>(std::ceil(frameLevels.size() * 0.2)));
+    const double fallbackNoiseDbuv = median(frameLevels.mid(0, lowestCount));
+
     double binStepHz = std::numeric_limits<double>::infinity();
     for (int index = 1; index < bins.size(); ++index) {
         const double gapHz = bins.at(index).frequencyHz - bins.at(index - 1).frequencyHz;
@@ -77,6 +96,43 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyFrame(const CeyearPs
             band.stopHz = lastFrequencyHz;
             band.centerHz = (band.startHz + band.stopHz) / 2.0;
             band.bandwidthHz = band.stopHz - band.startHz + binStepHz;
+            QVector<double> leftSideband;
+            QVector<double> rightSideband;
+            QVector<double> leftSidebandFrequencies;
+            QVector<double> rightSidebandFrequencies;
+            const double coverageToleranceHz = binStepHz / 2.0;
+            for (const CeyearPscBin &sample : bins) {
+                if (sample.frequencyHz >= band.startHz - SidebandNoiseWindowHz && sample.frequencyHz < band.startHz) {
+                    leftSideband.append(sample.levelDbuv);
+                    leftSidebandFrequencies.append(sample.frequencyHz);
+                } else if (sample.frequencyHz > band.stopHz && sample.frequencyHz <= band.stopHz + SidebandNoiseWindowHz) {
+                    rightSideband.append(sample.levelDbuv);
+                    rightSidebandFrequencies.append(sample.frequencyHz);
+                }
+            }
+            const auto hasNoInternalGap = [&](const QVector<double> &frequencies) {
+                for (int index = 1; index < frequencies.size(); ++index) {
+                    if (frequencies.at(index) - frequencies.at(index - 1) > maximumGapHz) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            const bool leftSidebandCoversWindow = !leftSidebandFrequencies.isEmpty()
+                && leftSidebandFrequencies.first() <= band.startHz - SidebandNoiseWindowHz + coverageToleranceHz
+                && leftSidebandFrequencies.last() >= band.startHz - binStepHz
+                && hasNoInternalGap(leftSidebandFrequencies);
+            const bool rightSidebandCoversWindow = !rightSidebandFrequencies.isEmpty()
+                && rightSidebandFrequencies.first() <= band.stopHz + binStepHz
+                && rightSidebandFrequencies.last() >= band.stopHz + SidebandNoiseWindowHz - coverageToleranceHz
+                && hasNoInternalGap(rightSidebandFrequencies);
+            const double sidebandNoiseDbuv = leftSideband.isEmpty() || rightSideband.isEmpty()
+                    || !leftSidebandCoversWindow || !rightSidebandCoversWindow
+                ? fallbackNoiseDbuv
+                : median(leftSideband + rightSideband);
+            if (band.peakLevelDbuv < sidebandNoiseDbuv + RelativeNoiseRiseDb) {
+                return;
+            }
             for (const PscWidebandRule &rule : m_rules) {
                 if (band.bandwidthHz >= rule.minimumBandwidthHz && band.bandwidthHz <= rule.maximumBandwidthHz) {
                     band.bandwidthClass = rule.bandwidthClass;
@@ -87,7 +143,7 @@ QVector<PscWidebandAlert> PscWidebandAlertDetector::classifyFrame(const CeyearPs
         };
 
         for (const CeyearPscBin &bin : bins) {
-            if (bin.levelDbuv < m_hitThresholdDbuv) {
+            if (bin.levelDbuv < fallbackNoiseDbuv + RelativeNoiseRiseDb) {
                 continue;
             }
 

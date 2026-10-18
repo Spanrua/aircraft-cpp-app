@@ -29,9 +29,12 @@ public:
     static constexpr double DefaultHitThresholdDbuv = -60.0;
     static constexpr double DefaultMinimumBandwidthHz = 16000000.0;
     static constexpr double DefaultMaximumBandwidthHz = 24000000.0;
+    static constexpr double RelativeNoiseRiseDb = 10.0;
+    static constexpr double SidebandNoiseWindowHz = 1000000.0;
     static QVector<PscWidebandRule> defaultRules();
 
-    // Non-finite thresholds and invalid bandwidth ranges fall back to the defaults above.
+    // The legacy absolute threshold parameter is retained for source compatibility.
+    // Wideband alerts use RelativeNoiseRiseDb instead.
     explicit PscWidebandAlertDetector(double hitThresholdDbuv = DefaultHitThresholdDbuv,
                                       double minimumBandwidthHz = DefaultMinimumBandwidthHz,
                                       double maximumBandwidthHz = DefaultMaximumBandwidthHz,
@@ -42,7 +45,6 @@ public:
     void reset();
 
 private:
-    double m_hitThresholdDbuv = DefaultHitThresholdDbuv;
     QVector<PscWidebandRule> m_rules;
     int m_requiredConsecutiveFrames = 2;
     QVector<PscWidebandAlert> m_previousAlerts;

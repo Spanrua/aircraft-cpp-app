@@ -29,6 +29,7 @@
 #include <QFileDialog>
 #include <QFrame>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLibraryInfo>
@@ -137,6 +138,23 @@ static void selectDirectoryInActiveDialog(const QString &path, int attempts = 25
         dialog->selectFile(path);
         static_cast<QDialog *>(dialog)->done(QDialog::Accepted);
     });
+}
+
+static CeyearPscFrame pscWidebandFrame(double startHz, int binCount, double binStepHz = 1000000.0)
+{
+    CeyearPscFrame frame;
+    const int sidebandBinCount = qMax(2, (binCount + 4) / 5);
+    frame.bins.reserve(binCount + sidebandBinCount * 2);
+    for (int index = sidebandBinCount; index > 0; --index) {
+        frame.bins.append({startHz - index * binStepHz, -80.0});
+    }
+    for (int index = 0; index < binCount; ++index) {
+        frame.bins.append({startHz + index * binStepHz, -35.0});
+    }
+    for (int index = 1; index <= sidebandBinCount; ++index) {
+        frame.bins.append({startHz + (binCount - 1 + index) * binStepHz, -80.0});
+    }
+    return frame;
 }
 
 class FakeUsrpDeviceService : public IUsrpDeviceService
@@ -425,6 +443,7 @@ private slots:
     void sweepPageUpdatesWaterfallAndCandidatesFromPscFrame();
     void sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity();
     void sweepPageShowsWidebandAlertClasses();
+    void sweepPagePrioritizesCandidateStatusColumn();
     void sweepPageMergesDriftingWidebandAlertHistory();
     void sweepPageMergesWidebandHistoryAcrossResolutionChanges();
     void sweepPageResetClearsWidebandAlert();
@@ -832,11 +851,7 @@ void UiTests::sweepPageReplaysWidebandAlertFromCsv()
     const QString csvPath = temporaryDirectory.filePath(QStringLiteral("wideband.csv"));
 
     const auto widebandFrame = [](double startHz) {
-        CeyearPscFrame frame;
-        for (int index = 0; index <= 20; ++index) {
-            frame.bins.append({startHz + index * 1000000.0, -35.0});
-        }
-        return frame;
+        return pscWidebandFrame(startHz, 21);
     };
     QString error;
     QVERIFY2(saveCeyearPscFramesCsv(csvPath,
@@ -1117,10 +1132,7 @@ void UiTests::sweepPageShowsConfirmedWidebandAlertAndKeepsAlertActivity()
     QVERIFY(candidateTable != nullptr);
     QVERIFY(alertLabel->isHidden());
 
-    CeyearPscFrame frame;
-    for (int index = 0; index <= 20; ++index) {
-        frame.bins.append({2400000000.0 + index * 1000000.0, -35.0});
-    }
+    const CeyearPscFrame frame = pscWidebandFrame(2400000000.0, 21);
 
     page.appendPscFrameForTest(frame);
     page.appendPscFrameForTest(frame);
@@ -1153,10 +1165,7 @@ void UiTests::sweepPageShowsWidebandAlertClasses()
         QVERIFY(alertLabel != nullptr);
         QVERIFY(candidateTable != nullptr);
 
-        CeyearPscFrame frame;
-        for (int index = 0; index < testCase.binCount; ++index) {
-            frame.bins.append({2400000000.0 + index * 1000000.0, -35.0});
-        }
+        const CeyearPscFrame frame = pscWidebandFrame(2400000000.0, testCase.binCount);
         page.appendPscFrameForTest(frame);
         page.appendPscFrameForTest(frame);
 
@@ -1172,6 +1181,30 @@ void UiTests::sweepPageShowsWidebandAlertClasses()
     }
 }
 
+void UiTests::sweepPagePrioritizesCandidateStatusColumn()
+{
+    SweepPage page;
+    page.resize(1840, 700);
+    page.show();
+    QTest::qWait(0);
+
+    auto *candidateTable = page.findChild<QTableWidget *>(QStringLiteral("PscCandidateTable"));
+    QVERIFY(candidateTable != nullptr);
+    QGroupBox *segmentGroup = nullptr;
+    QGroupBox *candidateGroup = nullptr;
+    for (QGroupBox *group : page.findChildren<QGroupBox *>()) {
+        if (group->title() == QStringLiteral("扫频频段")) {
+            segmentGroup = group;
+        } else if (group->title() == QStringLiteral("候选信号")) {
+            candidateGroup = group;
+        }
+    }
+    QVERIFY(segmentGroup != nullptr);
+    QVERIFY(candidateGroup != nullptr);
+    QCOMPARE(candidateTable->horizontalHeader()->sectionSize(4), 104);
+    QVERIFY(segmentGroup->width() < candidateGroup->width());
+}
+
 void UiTests::sweepPageMergesDriftingWidebandAlertHistory()
 {
     SweepPage page;
@@ -1179,11 +1212,7 @@ void UiTests::sweepPageMergesDriftingWidebandAlertHistory()
     QVERIFY(candidateTable != nullptr);
 
     const auto widebandFrame = [](double startHz) {
-        CeyearPscFrame frame;
-        for (int index = 0; index <= 20; ++index) {
-            frame.bins.append({startHz + index * 1000000.0, -35.0});
-        }
-        return frame;
+        return pscWidebandFrame(startHz, 21);
     };
 
     const CeyearPscFrame initialFrame = widebandFrame(2400000000.0);
@@ -1209,11 +1238,7 @@ void UiTests::sweepPageMergesWidebandHistoryAcrossResolutionChanges()
     QVERIFY(candidateTable != nullptr);
 
     const auto widebandFrame = [](double startHz, double binStepHz, int lastIndex) {
-        CeyearPscFrame frame;
-        for (int index = 0; index <= lastIndex; ++index) {
-            frame.bins.append({startHz + index * binStepHz, -35.0});
-        }
-        return frame;
+        return pscWidebandFrame(startHz, lastIndex + 1, binStepHz);
     };
 
     const CeyearPscFrame coarseFrame = widebandFrame(2400000000.0, 2000000.0, 10);
@@ -1244,10 +1269,7 @@ void UiTests::sweepPageResetClearsWidebandAlert()
     QVERIFY(waterfall != nullptr);
     QVERIFY(startButton != nullptr);
 
-    CeyearPscFrame frame;
-    for (int index = 0; index <= 20; ++index) {
-        frame.bins.append({2400000000.0 + index * 1000000.0, -35.0});
-    }
+    const CeyearPscFrame frame = pscWidebandFrame(2400000000.0, 21);
     page.appendPscFrameForTest(frame);
     page.appendPscFrameForTest(frame);
     QVERIFY(!alertLabel->isHidden());
