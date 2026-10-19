@@ -46,3 +46,7 @@ $env:PATH = "D:\Qt\5.12.10\5.12.10\msvc2017_64\bin;$env:PATH"
 ```
 
 - `cpp_app/build*/` is ignored by git.
+
+## Repository Governance
+
+This directory is the active Git repository. Read [Repository Governance](docs/repository-governance.md) before staging files, changing release scripts, or working with runtime assets.

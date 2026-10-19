@@ -147,3 +147,7 @@ Python 依赖版本可参考 [requirements-python.txt](requirements-python.txt)�
 - 如果提示找不到 Boost，检查 `BOOST_ROOT`、`CONDA_PREFIX` 或 `BOOST_INCLUDE_DIR`。
 - 如果启动时报 Qt platform plugin 错误，优先检查便携包内是否存在 `platforms/qwindows.dll`，或重新运行 `windeployqt`。
 - USRP 出现 overflow 时，优先降低采样率、缩短采集时长、确认 USB 3.0 连接、关闭占用磁盘/CPU 的程序。
+
+## 仓库治理
+
+本目录是唯一的正式开发仓库。提交文件、修改打包脚本或处理运行资产前，请先阅读[仓库治理说明](docs/repository-governance.md)。
