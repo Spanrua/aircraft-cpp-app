@@ -12,7 +12,7 @@ Keep the following application sources and configuration in Git:
 - build definitions and dependencies;
 - startup and release scripts;
 - documentation; and
-- the source and test-pinned configuration for `dji_training_backend_v5` that the application calls.
+- source code, tests, and fixed configuration in `dji_training_backend_v5` that the application calls.
 
 ## What Stays Local
 
