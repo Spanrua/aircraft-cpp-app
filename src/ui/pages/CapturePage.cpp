@@ -4,10 +4,16 @@
 #include "services/CeyearVisaQuery.h"
 #include "ui/widgets/MetricCard.h"
 
+#include <QAbstractButton>
+#include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDebug>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -25,7 +31,6 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QTabWidget>
@@ -33,6 +38,7 @@
 #include <QTableWidgetItem>
 #include <QThread>
 #include <QTimer>
+#include <QTextStream>
 #include <QVBoxLayout>
 
 #include <limits>
@@ -45,6 +51,29 @@ namespace
 {
 constexpr int kUsrpConfigIndex = 0;
 constexpr int kReserved3943BConfigIndex = 1;
+constexpr int kCeyearContinuousRecoveryDelayMs = 1000;
+constexpr int kCeyearContinuousMaxZeroByteRetries = 2;
+constexpr unsigned long kShutdownThreadWaitMs = 2000;
+
+void stopThreadForShutdown(QThread *thread, const QString &operation)
+{
+    if (!thread || !thread->isRunning()) {
+        return;
+    }
+    thread->requestInterruption();
+    thread->quit();
+    if (thread->wait(kShutdownThreadWaitMs)) {
+        return;
+    }
+
+    qWarning().noquote() << QStringLiteral("关闭时 %1 未在 %2 ms 内退出；将强制结束工作线程。")
+                                 .arg(operation)
+                                 .arg(kShutdownThreadWaitMs);
+    thread->terminate();
+    if (!thread->wait(kShutdownThreadWaitMs)) {
+        qFatal("CapturePage worker thread did not terminate during shutdown.");
+    }
+}
 
 QTableWidgetItem *readonlyItem(const QString &text)
 {
@@ -162,28 +191,37 @@ QWidget *fieldBlockWithEditor(const QString &label, QWidget *parent, CreateEdito
     return container;
 }
 
-QVBoxLayout *scrollColumnContent(QGroupBox *column, const QString &objectName)
+template <typename CreateEditor>
+QWidget *fieldBlockWithHint(const QString &label,
+                            const QString &hint,
+                            QWidget *parent,
+                            CreateEditor createEditor)
 {
-    auto *outerLayout = new QVBoxLayout(column);
-    outerLayout->setContentsMargins(12, 18, 12, 12);
-    outerLayout->setSpacing(0);
+    auto *container = new QWidget(parent);
+    auto *layout = new QVBoxLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
 
-    auto *scrollArea = new QScrollArea(column);
-    scrollArea->setObjectName(objectName);
-    scrollArea->setWidgetResizable(true);
-    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    scrollArea->setFrameShape(QFrame::NoFrame);
+    auto *caption = new QLabel(label, container);
+    caption->setProperty("muted", true);
+    layout->addWidget(caption);
+    layout->addWidget(createEditor(container));
 
-    auto *content = new QWidget(scrollArea);
-    content->setObjectName(objectName + QStringLiteral("Content"));
-    auto *contentLayout = new QVBoxLayout(content);
-    contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->setSpacing(10);
-    scrollArea->setWidget(content);
+    auto *hintLabel = new QLabel(hint, container);
+    hintLabel->setWordWrap(true);
+    hintLabel->setProperty("muted", true);
+    hintLabel->setProperty("fieldHint", true);
+    layout->addWidget(hintLabel);
+    return container;
+}
 
-    outerLayout->addWidget(scrollArea, 1);
-    return contentLayout;
+QVBoxLayout *columnContent(QGroupBox *column, const QString &objectName)
+{
+    auto *layout = new QVBoxLayout(column);
+    layout->setObjectName(objectName + QStringLiteral("Layout"));
+    layout->setContentsMargins(12, 18, 12, 12);
+    layout->setSpacing(10);
+    return layout;
 }
 
 bool parsePositiveDouble(const QComboBox *combo, const QString &fieldName, QString *error)
@@ -241,6 +279,13 @@ void captureDiagLog(const QString &line)
     file.flush();
 }
 
+QString csvField(const QString &value)
+{
+    QString escaped = value;
+    escaped.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+    return QStringLiteral("\"%1\"").arg(escaped);
+}
+
 } // namespace
 
 CapturePage::CapturePage(QWidget *parent)
@@ -276,51 +321,41 @@ CapturePage::CapturePage(std::unique_ptr<IUsrpDeviceService> usrpService,
 
 CapturePage::~CapturePage()
 {
+    endCaptureEventSession(false);
     if (m_ceyearContinuousTimer) {
         m_ceyearContinuousTimer->stop();
     }
-    if (m_captureThread) {
-        m_captureThread->quit();
-        m_captureThread->wait();
+    if (m_ceyearService) {
+        m_ceyearService->requestStop();
     }
-    if (m_ceyearThread) {
-        m_ceyearThread->quit();
-        m_ceyearThread->wait();
-    }
+    stopThreadForShutdown(m_captureThread, QStringLiteral("USRP 采集"));
+    stopThreadForShutdown(m_ceyearThread, QStringLiteral("3943B 采集"));
 }
 
 void CapturePage::buildUi()
 {
-    if (auto *scrollContent = findChild<QWidget *>(QStringLiteral("WorkflowPageScrollContent"))) {
-        scrollContent->setMinimumHeight(620);
-    }
-
     auto *workbench = new QHBoxLayout();
     workbench->setSpacing(14);
 
     auto *deviceColumn = new QGroupBox(QStringLiteral("设备"), this);
     deviceColumn->setObjectName(QStringLiteral("CaptureDeviceColumn"));
     deviceColumn->setMinimumWidth(240);
-    auto *deviceLayout = scrollColumnContent(deviceColumn, QStringLiteral("CaptureDeviceColumnScroll"));
+    auto *deviceLayout = columnContent(deviceColumn, QStringLiteral("CaptureDeviceColumn"));
 
     m_deviceTypeCombo = new QComboBox(deviceColumn);
     m_deviceTypeCombo->setObjectName(QStringLiteral("CaptureDeviceTypeCombo"));
-    m_deviceTypeCombo->addItems({QStringLiteral("USRP B210"), QStringLiteral("3943B（预留）")});
+    // Keep the legacy USRP value only for compatibility with injected test services.
+    // The visible workflow is intentionally fixed to the delivered 3943B hardware path.
+    m_deviceTypeCombo->addItems({QStringLiteral("3943B（预留）"), QStringLiteral("USRP B210")});
     m_deviceTypeCombo->setVisible(false);
 
-    auto *sourceLabel = new QLabel(QStringLiteral("采集源"), deviceColumn);
+    auto *sourceLabel = new QLabel(QStringLiteral("硬件能力"), deviceColumn);
     sourceLabel->setProperty("muted", true);
     deviceLayout->addWidget(sourceLabel);
 
-    m_usrpSourceButton = new QPushButton(QStringLiteral("USRP B210"), deviceColumn);
-    m_usrpSourceButton->setObjectName(QStringLiteral("UsrpSourceButton"));
-    m_usrpSourceButton->setCheckable(true);
-    m_usrpSourceButton->setChecked(true);
-    m_usrpSourceButton->setProperty("primary", true);
-    m_3943bSourceButton = new QPushButton(QStringLiteral("3943B"), deviceColumn);
+    m_3943bSourceButton = new QPushButton(QStringLiteral("3943B 信号分析仪"), deviceColumn);
     m_3943bSourceButton->setObjectName(QStringLiteral("Device3943BSourceButton"));
-    m_3943bSourceButton->setCheckable(true);
-    deviceLayout->addWidget(m_usrpSourceButton);
+    m_3943bSourceButton->setProperty("primary", true);
     deviceLayout->addWidget(m_3943bSourceButton);
     deviceLayout->addWidget(m_deviceTypeCombo);
 
@@ -335,6 +370,12 @@ void CapturePage::buildUi()
     m_connectionSummary->setProperty("summary", true);
     deviceLayout->addWidget(m_connectionSummary);
 
+    m_ceyearReadinessLabel = new QLabel(QStringLiteral("3943B 状态：未查询 · 请先查询状态，再启动 IQRAW 采集。"), deviceColumn);
+    m_ceyearReadinessLabel->setObjectName(QStringLiteral("CeyearReadinessLabel"));
+    m_ceyearReadinessLabel->setWordWrap(true);
+    m_ceyearReadinessLabel->setProperty("summary", true);
+    deviceLayout->addWidget(m_ceyearReadinessLabel);
+
     m_deviceMetric = new MetricCard(QStringLiteral("设备状态"), deviceColumn);
     m_deviceMetric->setValue(QStringLiteral("未检查"));
     m_fileMetric = new MetricCard(QStringLiteral("采集文件"), deviceColumn);
@@ -344,7 +385,6 @@ void CapturePage::buildUi()
 
     m_deviceConfigStack = new QStackedWidget(deviceColumn);
     m_deviceConfigStack->setObjectName(QStringLiteral("DeviceConfigStack"));
-    m_deviceConfigStack->addWidget(buildUsrpConfigPanel());
     m_deviceConfigStack->addWidget(buildReservedDevicePanel());
     deviceLayout->addWidget(m_deviceConfigStack);
     deviceLayout->addStretch();
@@ -353,7 +393,7 @@ void CapturePage::buildUi()
     auto *parametersColumn = new QGroupBox(QStringLiteral("参数配置"), this);
     parametersColumn->setObjectName(QStringLiteral("CaptureParametersColumn"));
     parametersColumn->setMinimumWidth(360);
-    auto *parametersLayout = scrollColumnContent(parametersColumn, QStringLiteral("CaptureParametersColumnScroll"));
+    auto *parametersLayout = columnContent(parametersColumn, QStringLiteral("CaptureParametersColumn"));
 
     m_parameterStack = new QStackedWidget(parametersColumn);
     m_parameterStack->setObjectName(QStringLiteral("CaptureParameterStack"));
@@ -363,11 +403,17 @@ void CapturePage::buildUi()
     usrpParameterLayout->setContentsMargins(0, 0, 0, 0);
     usrpParameterLayout->setSpacing(12);
 
-    m_editableParamsHint = new QLabel(QStringLiteral("下拉项是常用预设，也可以直接输入 UHD 支持的数值。你的天线接在 RF-A TX/RX，默认使用通道 0 + TX/RX。"), m_usrpParameterPanel);
+    m_editableParamsHint = new QLabel(QStringLiteral("推荐模式已填入常用值，也可以直接输入 UHD 支持的数值。UHD 是 USRP 驱动库；采集输出 CAP 是后续预处理的原始文件。默认使用通道 0 + TX/RX。"), m_usrpParameterPanel);
     m_editableParamsHint->setObjectName(QStringLiteral("UsrpEditableParametersHint"));
     m_editableParamsHint->setWordWrap(true);
     m_editableParamsHint->setProperty("muted", true);
     usrpParameterLayout->addWidget(m_editableParamsHint);
+
+    m_usrpParameterModeLabel = new QLabel(QStringLiteral("当前模式：推荐模式（常规 USRP 采集）"), m_usrpParameterPanel);
+    m_usrpParameterModeLabel->setObjectName(QStringLiteral("UsrpParameterModeLabel"));
+    m_usrpParameterModeLabel->setProperty("summary", true);
+    m_usrpParameterModeLabel->setWordWrap(true);
+    usrpParameterLayout->addWidget(m_usrpParameterModeLabel);
 
     auto *basicGroup = new QGroupBox(QStringLiteral("基础参数"), m_usrpParameterPanel);
     basicGroup->setObjectName(QStringLiteral("UsrpBasicParametersPanel"));
@@ -375,23 +421,38 @@ void CapturePage::buildUi()
     basicGrid->setContentsMargins(14, 18, 14, 14);
     basicGrid->setHorizontalSpacing(14);
     basicGrid->setVerticalSpacing(12);
-    basicGrid->addWidget(fieldBlockWithEditor(QStringLiteral("中心频率 Hz"), basicGroup, [this](QWidget *parent) {
+    basicGrid->addWidget(fieldBlockWithHint(QStringLiteral("中心频率 Hz"),
+                                            QStringLiteral("示例：2400000000；规则：大于 0，按目标频段填写。"),
+                                            basicGroup,
+                                            [this](QWidget *parent) {
         m_centerFreqCombo = editableCombo(QStringLiteral("UsrpCenterFrequencyCombo"), {QStringLiteral("2400000000"), QStringLiteral("1090000000"), QStringLiteral("915000000"), QStringLiteral("433000000")}, QStringLiteral("2400000000"), parent);
         return m_centerFreqCombo;
     }), 0, 0);
-    basicGrid->addWidget(fieldBlockWithEditor(QStringLiteral("采样率 Sps"), basicGroup, [this](QWidget *parent) {
+    basicGrid->addWidget(fieldBlockWithHint(QStringLiteral("采样率 Sps"),
+                                            QStringLiteral("示例：12800000；规则：大于 0，决定可观察带宽和数据量。"),
+                                            basicGroup,
+                                            [this](QWidget *parent) {
         m_sampleRateCombo = editableCombo(QStringLiteral("UsrpSampleRateCombo"), {QStringLiteral("12800000"), QStringLiteral("8000000"), QStringLiteral("4000000"), QStringLiteral("2000000")}, QStringLiteral("12800000"), parent);
         return m_sampleRateCombo;
     }), 0, 1);
-    basicGrid->addWidget(fieldBlockWithEditor(QStringLiteral("增益 dB"), basicGroup, [this](QWidget *parent) {
+    basicGrid->addWidget(fieldBlockWithHint(QStringLiteral("增益 dB"),
+                                            QStringLiteral("示例：30；范围：非负，信号弱时提高，噪声或削顶时降低。"),
+                                            basicGroup,
+                                            [this](QWidget *parent) {
         m_gainCombo = editableCombo(QStringLiteral("UsrpGainCombo"), {QStringLiteral("30"), QStringLiteral("20"), QStringLiteral("10"), QStringLiteral("0")}, QStringLiteral("30"), parent);
         return m_gainCombo;
     }), 1, 0);
-    basicGrid->addWidget(fieldBlockWithEditor(QStringLiteral("采集时长 s"), basicGroup, [this](QWidget *parent) {
+    basicGrid->addWidget(fieldBlockWithHint(QStringLiteral("采集时长 s"),
+                                            QStringLiteral("示例：0.1；范围：大于 0，短时测试通常使用 0.1 到 1.0 s。"),
+                                            basicGroup,
+                                            [this](QWidget *parent) {
         m_durationCombo = editableCombo(QStringLiteral("UsrpDurationCombo"), {QStringLiteral("0.1"), QStringLiteral("0.25"), QStringLiteral("0.5"), QStringLiteral("1.0"), QStringLiteral("3.0")}, QStringLiteral("0.1"), parent);
         return m_durationCombo;
     }), 1, 1);
-    basicGrid->addWidget(fieldBlockWithEditor(QStringLiteral("天线"), basicGroup, [this](QWidget *parent) {
+    basicGrid->addWidget(fieldBlockWithHint(QStringLiteral("天线"),
+                                            QStringLiteral("推荐：TX/RX；只有接线或仪器要求不同通道时才切换。"),
+                                            basicGroup,
+                                            [this](QWidget *parent) {
         m_antennaCombo = editableCombo(QStringLiteral("UsrpAntennaCombo"), {QStringLiteral("TX/RX"), QStringLiteral("RX2")}, QStringLiteral("TX/RX"), parent);
         return m_antennaCombo;
     }), 2, 0);
@@ -399,7 +460,7 @@ void CapturePage::buildUi()
     basicGrid->setColumnStretch(1, 1);
     usrpParameterLayout->addWidget(basicGroup);
 
-    m_advancedParamsToggle = new QPushButton(QStringLiteral("显示高级参数"), m_usrpParameterPanel);
+    m_advancedParamsToggle = new QPushButton(QStringLiteral("切换到专家模式"), m_usrpParameterPanel);
     m_advancedParamsToggle->setObjectName(QStringLiteral("UsrpAdvancedParametersToggle"));
     m_advancedParamsToggle->setCheckable(true);
     m_advancedParamsToggle->setProperty("secondary", true);
@@ -437,7 +498,6 @@ void CapturePage::buildUi()
     usrpParameterLayout->addWidget(m_advancedParamsPanel);
 
     usrpParameterLayout->addStretch();
-    m_parameterStack->addWidget(m_usrpParameterPanel);
     m_ceyearControlPanel = buildCeyearControlPanel();
     m_parameterStack->addWidget(m_ceyearControlPanel);
     parametersLayout->addWidget(m_parameterStack, 1);
@@ -452,7 +512,7 @@ void CapturePage::buildUi()
     auto *runColumn = new QGroupBox(QStringLiteral("运行"), this);
     runColumn->setObjectName(QStringLiteral("CaptureRunColumn"));
     runColumn->setMinimumWidth(300);
-    auto *runLayout = scrollColumnContent(runColumn, QStringLiteral("CaptureRunColumnScroll"));
+    auto *runLayout = columnContent(runColumn, QStringLiteral("CaptureRunColumn"));
 
     m_taskMetric = new MetricCard(QStringLiteral("采集任务"), runColumn);
     m_taskMetric->setValue(QStringLiteral("待执行"));
@@ -474,6 +534,11 @@ void CapturePage::buildUi()
     m_outputDirEdit->setReadOnly(true);
     runLayout->addWidget(m_outputDirEdit);
 
+    m_captureElapsedLabel = new QLabel(QStringLiteral("当前采集时长：未开始"), runColumn);
+    m_captureElapsedLabel->setObjectName(QStringLiteral("CaptureElapsedLabel"));
+    m_captureElapsedLabel->setProperty("muted", true);
+    runLayout->addWidget(m_captureElapsedLabel);
+
     m_captureButton = new QPushButton(QStringLiteral("开始采集"), runColumn);
     m_captureButton->setObjectName(QStringLiteral("StartUsrpCaptureButton"));
     m_captureButton->setProperty("primary", true);
@@ -487,11 +552,17 @@ void CapturePage::buildUi()
     m_stopCeyearCaptureButton->setProperty("secondary", true);
     runLayout->addWidget(m_stopCeyearCaptureButton);
 
+    m_copyDiagnosticsButton = new QPushButton(QStringLiteral("复制诊断信息"), runColumn);
+    m_copyDiagnosticsButton->setObjectName(QStringLiteral("CopyCaptureDiagnosticsButton"));
+    m_copyDiagnosticsButton->setProperty("secondary", true);
+    m_copyDiagnosticsButton->setToolTip(QStringLiteral("复制当前 3943B 状态、资源地址与运行日志，便于问题定位。"));
+    runLayout->addWidget(m_copyDiagnosticsButton);
+
     m_logOutput = new QPlainTextEdit(runColumn);
     m_logOutput->setObjectName(QStringLiteral("UsrpCaptureLog"));
     m_logOutput->setReadOnly(true);
     m_logOutput->setMinimumHeight(180);
-    m_logOutput->setPlainText(QStringLiteral("选择采集源并检查连接。"));
+    m_logOutput->setPlainText(QStringLiteral("配置 3943B 参数后，可先查询状态再启动 IQRAW 采集。"));
     runLayout->addWidget(m_logOutput, 1);
     workbench->addWidget(runColumn, 34);
 
@@ -515,8 +586,6 @@ void CapturePage::buildUi()
     m_deviceTable->setHorizontalHeaderLabels({QStringLiteral("设备"), QStringLiteral("类型"), QStringLiteral("序列号"), QStringLiteral("状态")});
     m_deviceTable->horizontalHeader()->setStretchLastSection(true);
     m_deviceTable->verticalHeader()->setVisible(false);
-    m_resultsTabs->addTab(m_deviceTable, QStringLiteral("设备列表"));
-
     m_captureTable = new QTableWidget(0, 5, m_resultsTabs);
     m_captureTable->setObjectName(QStringLiteral("UsrpCaptureTable"));
     m_captureTable->setMinimumHeight(180);
@@ -546,12 +615,18 @@ void CapturePage::buildUi()
             }
             return;
         }
-        startCeyearCaptureFromUi(true);
+        if (m_ceyearRetryCurrentRound) {
+            m_ceyearRetryCurrentRound = false;
+            startCeyearCaptureFromUi(false);
+        } else {
+            startCeyearCaptureFromUi(true);
+        }
     });
+    m_captureEventUiTimer = new QTimer(this);
+    m_captureEventUiTimer->setInterval(100);
+    connect(m_captureEventUiTimer, &QTimer::timeout, this, &CapturePage::updateCaptureEventStatus);
+    m_captureEventUiTimer->start();
 
-    connect(m_usrpSourceButton, &QPushButton::clicked, this, [this]() {
-        m_deviceTypeCombo->setCurrentText(QStringLiteral("USRP B210"));
-    });
     connect(m_3943bSourceButton, &QPushButton::clicked, this, [this]() {
         m_deviceTypeCombo->setCurrentText(QStringLiteral("3943B（预留）"));
     });
@@ -559,13 +634,41 @@ void CapturePage::buildUi()
     connect(m_discoverButton, &QPushButton::clicked, this, &CapturePage::discoverDevices);
     connect(m_captureButton, &QPushButton::clicked, this, &CapturePage::startCapture);
     connect(m_stopCeyearCaptureButton, &QPushButton::clicked, this, &CapturePage::stopCeyearCaptureAsync);
+    connect(m_copyDiagnosticsButton, &QPushButton::clicked, this, [this]() {
+        const QString diagnostic = QStringLiteral("3943B 诊断信息\n%1\n%2\n\n运行日志：\n%3")
+                                       .arg(m_connectionSummary ? m_connectionSummary->text() : QString(),
+                                            m_ceyearReadinessLabel ? m_ceyearReadinessLabel->text() : QString(),
+                                            m_logOutput ? m_logOutput->toPlainText() : QString());
+        if (QApplication::clipboard()) {
+            QApplication::clipboard()->setText(diagnostic);
+            appendValidationMessage(QStringLiteral("3943B 诊断信息已复制，可直接附到问题反馈中。"), QStringLiteral("good"));
+        }
+    });
     connect(m_ceyearResourceEdit, &QLineEdit::editingFinished, this, &CapturePage::updateConnectionSummary);
+    connect(m_ceyearPresetCombo, qOverload<int>(&QComboBox::activated), this, [this](int index) {
+        if (index <= 0 || !m_ceyearPresetCombo) {
+            return;
+        }
+        const QStringList values = m_ceyearPresetCombo->itemData(index).toString().split(QLatin1Char(','));
+        if (values.size() != 2 || !m_ceyearCenterFrequencyEdit || !m_ceyearFrequencySpanEdit) {
+            return;
+        }
+        m_ceyearCenterFrequencyEdit->setText(values.at(0));
+        m_ceyearFrequencySpanEdit->setText(values.at(1));
+        appendValidationMessage(QStringLiteral("已应用“%1”预设；请确认后再执行设备操作。")
+                                    .arg(m_ceyearPresetCombo->itemText(index)), QStringLiteral("neutral"));
+    });
     connect(m_advancedParamsToggle, &QPushButton::toggled, this, [this](bool checked) {
         if (m_advancedParamsPanel) {
             m_advancedParamsPanel->setVisible(checked);
         }
         if (m_advancedParamsToggle) {
-            m_advancedParamsToggle->setText(checked ? QStringLiteral("隐藏高级参数") : QStringLiteral("显示高级参数"));
+            m_advancedParamsToggle->setText(checked ? QStringLiteral("切换到推荐模式") : QStringLiteral("切换到专家模式"));
+        }
+        if (m_usrpParameterModeLabel) {
+            m_usrpParameterModeLabel->setText(checked
+                                                  ? QStringLiteral("当前模式：专家模式（可指定设备、通道和底层采样格式；修改前请确认硬件支持）")
+                                                  : QStringLiteral("当前模式：推荐模式（常规 USRP 采集）"));
         }
     });
 }
@@ -595,7 +698,7 @@ QWidget *CapturePage::buildReservedDevicePanel()
     m_3943bPlaceholder = new QLabel(QStringLiteral("3943B 接口待接入，当前仅保留设备选择入口。"), panel);
     m_3943bPlaceholder->setObjectName(QStringLiteral("Device3943BPlaceholder"));
     m_3943bPlaceholder->setWordWrap(true);
-    m_3943bPlaceholder->setText(QStringLiteral("3943B LAN/VISA 状态查询。确认电脑网口与仪器同网段后，点击左侧检查设备。"));
+    m_3943bPlaceholder->setText(QStringLiteral("3943B LAN/VISA 状态查询。VISA 是仪器通信接口；确认电脑网口与仪器同网段后，点击左侧检查设备。采集结果可保存为 IQRAW，供预处理页读取。"));
     m_3943bPlaceholder->setProperty("muted", true);
     layout->addWidget(m_3943bPlaceholder);
 
@@ -624,6 +727,19 @@ QWidget *CapturePage::buildCeyearControlPanel()
     hint->setWordWrap(true);
     hint->setProperty("muted", true);
     layout->addWidget(hint);
+
+    auto *presetRow = new QHBoxLayout();
+    auto *presetLabel = new QLabel(QStringLiteral("常用预设"), panel);
+    presetLabel->setProperty("muted", true);
+    presetRow->addWidget(presetLabel);
+    m_ceyearPresetCombo = new QComboBox(panel);
+    m_ceyearPresetCombo->setObjectName(QStringLiteral("CeyearFrequencyPresetCombo"));
+    m_ceyearPresetCombo->addItem(QStringLiteral("手动设置"));
+    m_ceyearPresetCombo->addItem(QStringLiteral("2.4 GHz 图传（2.400 GHz / 20 MHz）"), QStringLiteral("2400000000,20000000"));
+    m_ceyearPresetCombo->addItem(QStringLiteral("5.8 GHz 图传（5.800 GHz / 20 MHz）"), QStringLiteral("5800000000,20000000"));
+    m_ceyearPresetCombo->setToolTip(QStringLiteral("预设仅填写中心频率和跨度；其余高级参数保持当前值。"));
+    presetRow->addWidget(m_ceyearPresetCombo, 1);
+    layout->addLayout(presetRow);
 
     auto *controlGroup = new QGroupBox(QStringLiteral("3943B 可写控制"), panel);
     controlGroup->setObjectName(QStringLiteral("CeyearControlGroup"));
@@ -836,21 +952,15 @@ QWidget *CapturePage::buildCeyearControlPanel()
 void CapturePage::updateDeviceTypeUi()
 {
     const bool usrp = isUsrpSelected();
-    if (m_usrpSourceButton) {
-        m_usrpSourceButton->setChecked(usrp);
-        m_usrpSourceButton->setProperty("primary", usrp);
-        refreshWidgetStyle(m_usrpSourceButton);
-    }
     if (m_3943bSourceButton) {
-        m_3943bSourceButton->setChecked(!usrp);
-        m_3943bSourceButton->setProperty("primary", !usrp);
+        m_3943bSourceButton->setProperty("primary", true);
         refreshWidgetStyle(m_3943bSourceButton);
     }
     if (m_deviceConfigStack) {
-        m_deviceConfigStack->setCurrentIndex(usrp ? kUsrpConfigIndex : kReserved3943BConfigIndex);
+        m_deviceConfigStack->setCurrentIndex(0);
     }
     if (m_parameterStack) {
-        m_parameterStack->setCurrentWidget(usrp ? m_usrpParameterPanel : m_ceyearControlPanel);
+        m_parameterStack->setCurrentWidget(m_ceyearControlPanel);
     }
     if (m_taskMetric) {
         m_taskMetric->setValue(usrp ? QStringLiteral("待执行") : QStringLiteral("3943B 待采集"));
@@ -928,13 +1038,7 @@ void CapturePage::startCapture()
             return;
         }
         const bool continuous = m_ceyearContinuousCaptureCheck && m_ceyearContinuousCaptureCheck->isChecked();
-        if (continuous) {
-            m_ceyearContinuousActive = true;
-            m_ceyearContinuousRound = 0;
-            appendLog(QStringLiteral("3943B 连续采集已启动：每轮按 IQ 点数达到后保存 IQRAW。"));
-            appendLog(QStringLiteral("3943B 连续采集流程：本轮结束后立即开始下一轮，不再按固定间隔等待。"));
-        }
-        if (!startCeyearCaptureFromUi(continuous)) {
+        if (!startCeyearCaptureFromUi(continuous, continuous)) {
             if (continuous) {
                 cancelCeyearContinuousCapture();
             }
@@ -979,6 +1083,8 @@ void CapturePage::startCapture()
                   .arg(config.gainDb, 0, 'f', 1)
                   .arg(config.cpuFormat, config.wireFormat));
     appendLog(QStringLiteral("开始采集：%1 s，输出 %2").arg(config.durationSeconds, 0, 'f', 3).arg(config.outputFilePath));
+    beginCaptureEventSession();
+    setCaptureEventFilePath(config.outputFilePath);
     startCaptureAsync(config);
 }
 
@@ -1180,7 +1286,52 @@ QString CapturePage::validateCeyearCapture(CeyearCaptureConfig *config) const
     return {};
 }
 
-bool CapturePage::startCeyearCaptureFromUi(bool continuous)
+bool CapturePage::confirmCeyearContinuousCapture(const CeyearCaptureConfig &config)
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("CeyearContinuousCaptureConfirmDialog"));
+    dialog.setWindowTitle(QStringLiteral("确认连续采集"));
+    dialog.setMinimumWidth(460);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(QStringLiteral("连续采集会反复触发 3943B IQ 上报，直到手动停止。"), &dialog);
+    title->setWordWrap(true);
+    layout->addWidget(title);
+
+    const QString resource = m_ceyearResourceEdit ? m_ceyearResourceEdit->text().trimmed() : defaultCeyearVisaResource();
+    auto *details = new QLabel(QStringLiteral("VISA：%1\n接收端：%2 %3:%4\n每轮 IQ 点数：%5\n保存目录：%6")
+                                  .arg(resource.isEmpty() ? defaultCeyearVisaResource() : resource,
+                                       config.pcReceiveProtocol,
+                                       config.pcReceiveIpAddress)
+                                  .arg(config.pcReceivePort)
+                                  .arg(config.iqPointCount)
+                                  .arg(QDir::toNativeSeparators(QFileInfo(config.outputFilePath).absolutePath())),
+                              &dialog);
+    details->setWordWrap(true);
+    details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(details);
+
+    auto *note = new QLabel(QStringLiteral("开始后采集参数会锁定。请确认 PC 接收端口未被占用，需要结束时点击“停止连续采集”。"), &dialog);
+    note->setWordWrap(true);
+    note->setProperty("muted", true);
+    layout->addWidget(note);
+
+    auto *buttons = new QDialogButtonBox(&dialog);
+    auto *startButton = buttons->addButton(QStringLiteral("开始连续采集"), QDialogButtonBox::AcceptRole);
+    auto *cancelButton = buttons->addButton(QStringLiteral("取消"), QDialogButtonBox::RejectRole);
+    cancelButton->setDefault(true);
+    cancelButton->setAutoDefault(true);
+    startButton->setAutoDefault(false);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    return dialog.exec() == QDialog::Accepted;
+}
+bool CapturePage::startCeyearCaptureFromUi(bool continuous, bool confirmContinuousStart)
 {
     if (m_ceyearBusy || m_ceyearThread) {
         return false;
@@ -1196,8 +1347,25 @@ bool CapturePage::startCeyearCaptureFromUi(bool continuous)
         return false;
     }
 
+    if (continuous && confirmContinuousStart && !confirmCeyearContinuousCapture(config)) {
+        appendValidationMessage(QStringLiteral("已取消 3943B 连续采集。"), QStringLiteral("neutral"));
+        appendLog(QStringLiteral("已取消 3943B 连续采集，未触发仪器。"));
+        return false;
+    }
+
+    if (continuous && !m_ceyearContinuousActive) {
+        m_ceyearContinuousActive = true;
+        m_ceyearContinuousRound = 0;
+        m_ceyearContinuousRetryCount = 0;
+        m_ceyearRetryCurrentRound = false;
+        appendLog(QStringLiteral("3943B 连续采集已启动：每轮按 IQ 点数达到后保存 IQRAW。"));
+        appendLog(QStringLiteral("3943B 连续采集流程：本轮结束后等待 %1 ms 让设备恢复，再开始下一轮。")
+                      .arg(kCeyearContinuousRecoveryDelayMs));
+    }
+
     if (continuous) {
         ++m_ceyearContinuousRound;
+        m_ceyearContinuousRetryCount = 0;
         appendLog(QStringLiteral("3943B 连续采集第 %1 轮开始：目标 IQ 点数 %2，输出 %3")
                       .arg(m_ceyearContinuousRound)
                       .arg(config.iqPointCount)
@@ -1214,6 +1382,8 @@ bool CapturePage::startCeyearCaptureFromUi(bool continuous)
                   .arg(config.frequencySpanHz, 0, 'f', 0)
                   .arg(config.measureMode)
                   .arg(config.iqPointCount));
+    beginCaptureEventSession();
+    setCaptureEventFilePath(config.outputFilePath);
     captureDiagLog(QStringLiteral("3943B startCeyearCaptureAsync before; resource=%1 pc=%2:%3 output=%4")
                        .arg(m_ceyearResourceEdit ? m_ceyearResourceEdit->text().trimmed() : QString(),
                             config.pcReceiveIpAddress)
@@ -1378,9 +1548,10 @@ void CapturePage::scheduleNextCeyearContinuousCapture()
     }
 
     const qint64 elapsedMs = m_ceyearCurrentCaptureTimer.isValid() ? m_ceyearCurrentCaptureTimer.elapsed() : 0;
-    appendLog(QStringLiteral("3943B 连续采集第 %1 轮已结束，用时 %2 s；立即启动第 %3 轮。")
+    appendLog(QStringLiteral("3943B 连续采集第 %1 轮已结束，用时 %2 s；等待设备恢复 %3 ms 后启动第 %4 轮。")
                   .arg(m_ceyearContinuousRound)
                   .arg(elapsedMs / 1000.0, 0, 'f', 3)
+                  .arg(kCeyearContinuousRecoveryDelayMs)
                   .arg(m_ceyearContinuousRound + 1));
     if (m_taskMetric) {
         m_taskMetric->setValue(QStringLiteral("连续采集中"));
@@ -1390,7 +1561,7 @@ void CapturePage::scheduleNextCeyearContinuousCapture()
         m_taskStateLabel->setProperty("state", QStringLiteral("running"));
         refreshWidgetStyle(m_taskStateLabel);
     }
-    m_ceyearContinuousTimer->start(0);
+    m_ceyearContinuousTimer->start(kCeyearContinuousRecoveryDelayMs);
 }
 
 void CapturePage::cancelCeyearContinuousCapture()
@@ -1403,6 +1574,8 @@ void CapturePage::cancelCeyearContinuousCapture()
     }
     m_ceyearContinuousActive = false;
     m_ceyearContinuousRound = 0;
+    m_ceyearContinuousRetryCount = 0;
+    m_ceyearRetryCurrentRound = false;
 }
 
 void CapturePage::stopCeyearCaptureAsync()
@@ -1538,6 +1711,121 @@ void CapturePage::appendValidationMessage(const QString &line, const QString &ki
     refreshWidgetStyle(m_validationMessage);
 }
 
+void CapturePage::beginCaptureEventSession()
+{
+    if (m_captureEventActive) {
+        return;
+    }
+    m_captureEventTimer.start();
+    m_captureEventActive = true;
+    if (m_captureElapsedLabel) {
+        m_captureElapsedLabel->setText(QStringLiteral("当前采集时长：0.000 秒"));
+    }
+    recordCaptureEvent(QStringLiteral("CAPTURE_START"));
+    appendLog(QStringLiteral("采集事件记录已开始"));
+}
+
+void CapturePage::setCaptureEventFilePath(const QString &filePath)
+{
+    m_captureEventFilePath = filePath.trimmed();
+}
+
+void CapturePage::recordCaptureEvent(const QString &eventName)
+{
+    const QString logDirectory = ProjectPaths::dataDirectory();
+    if (!QDir().mkpath(logDirectory)) {
+        appendLog(QStringLiteral("采集事件日志目录创建失败：%1").arg(logDirectory));
+        return;
+    }
+
+    const QString logPath = QDir(logDirectory).filePath(QStringLiteral("event_log.csv"));
+    const bool fileExists = QFileInfo::exists(logPath);
+    const QByteArray expectedHeader("timestamp,iq_elapsed_seconds,event,drone_id,model,behavior_code,behavior_name,capture_active,iq_file\n");
+    if (fileExists && QFileInfo(logPath).size() > 0) {
+        QFile existing(logPath);
+        if (existing.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QByteArray firstLine = existing.readLine();
+            existing.close();
+            if (firstLine.trimmed() != QByteArray("timestamp,iq_elapsed_seconds,event,drone_id,model,behavior_code,behavior_name,capture_active,iq_file")) {
+                const QString legacyPath = logPath + QStringLiteral(".legacy.csv");
+                if (!QFileInfo::exists(legacyPath) && QFile::copy(logPath, legacyPath)) {
+                    appendLog(QStringLiteral("旧采集事件日志已保留为：%1").arg(legacyPath));
+                }
+                QFile reset(logPath);
+                if (!reset.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+                    appendLog(QStringLiteral("采集事件日志升级失败：%1").arg(reset.errorString()));
+                    return;
+                }
+                reset.write(expectedHeader);
+                reset.close();
+            }
+        }
+    }
+    QFile file(logPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        appendLog(QStringLiteral("采集事件日志写入失败：%1").arg(file.errorString()));
+        return;
+    }
+
+    QTextStream stream(&file);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    stream.setEncoding(QStringConverter::Utf8);
+#else
+    stream.setCodec("UTF-8");
+#endif
+    if (!fileExists || file.size() == 0) {
+        stream << expectedHeader;
+    }
+
+    const double elapsedSeconds = m_captureEventTimer.isValid()
+        ? static_cast<double>(m_captureEventTimer.elapsed()) / 1000.0
+        : 0.0;
+    const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
+    const bool active = eventName != QStringLiteral("CAPTURE_END") && m_captureEventActive;
+    stream << csvField(timestamp) << ','
+           << QString::number(elapsedSeconds, 'f', 3) << ','
+           << csvField(eventName) << ','
+           << csvField(QString()) << ','
+           << csvField(QString()) << ','
+           << csvField(QStringLiteral("UNKNOWN")) << ','
+           << csvField(QStringLiteral("未设置")) << ','
+           << (active ? QStringLiteral("1") : QStringLiteral("0")) << ','
+           << csvField(m_captureEventFilePath.isEmpty() ? QString() : QFileInfo(m_captureEventFilePath).fileName())
+           << '\n';
+    stream.flush();
+
+    appendLog(QStringLiteral("采集事件日志：%1，采集 +%2 s")
+                  .arg(eventName)
+                  .arg(elapsedSeconds, 0, 'f', 3));
+}
+
+void CapturePage::endCaptureEventSession(bool success)
+{
+    if (!m_captureEventActive) {
+        return;
+    }
+    const double elapsedSeconds = m_captureEventTimer.isValid()
+        ? static_cast<double>(m_captureEventTimer.elapsed()) / 1000.0
+        : 0.0;
+    recordCaptureEvent(QStringLiteral("CAPTURE_END"));
+    m_captureEventActive = false;
+    m_captureEventFilePath.clear();
+    if (m_captureElapsedLabel) {
+        m_captureElapsedLabel->setText(QStringLiteral("本次采集时长：%1 秒（%2）")
+                                           .arg(elapsedSeconds, 0, 'f', 3)
+                                           .arg(success ? QStringLiteral("完成") : QStringLiteral("失败")));
+    }
+}
+
+void CapturePage::updateCaptureEventStatus()
+{
+    if (!m_captureEventActive || !m_captureEventTimer.isValid() || !m_captureElapsedLabel) {
+        return;
+    }
+    const double elapsedSeconds = static_cast<double>(m_captureEventTimer.elapsed()) / 1000.0;
+    m_captureElapsedLabel->setText(QStringLiteral("当前采集时长：%1 秒").arg(elapsedSeconds, 0, 'f', 3));
+}
+
 void CapturePage::updateConnectionSummary()
 {
     if (!m_connectionSummary) {
@@ -1545,7 +1833,19 @@ void CapturePage::updateConnectionSummary()
     }
     if (!isUsrpSelected()) {
         const QString resource = m_ceyearResourceEdit ? m_ceyearResourceEdit->text().trimmed() : defaultCeyearVisaResource();
-        m_connectionSummary->setText(QStringLiteral("当前选择 3943B。LAN/VISA：%1").arg(resource.isEmpty() ? defaultCeyearVisaResource() : resource));
+        m_connectionSummary->setText(QStringLiteral("当前选择 3943B。LAN/VISA：%1。VISA 是仪器通信接口，确认电脑网口与仪器同网段后再检查设备。")
+                                         .arg(resource.isEmpty() ? defaultCeyearVisaResource() : resource));
+        if (m_ceyearReadinessLabel) {
+            const QString checkedAt = m_ceyearLastStatusAt.isEmpty()
+                ? QString()
+                : QStringLiteral(" · 最近查询：%1").arg(m_ceyearLastStatusAt);
+            m_ceyearReadinessLabel->setText(QStringLiteral("3943B 状态：%1%2 · %3")
+                                                 .arg(m_ceyearLastStatusText,
+                                                      checkedAt,
+                                                      m_ceyearLastStatusText == QStringLiteral("在线")
+                                                          ? QStringLiteral("可启动 IQRAW 采集。")
+                                                          : QStringLiteral("请先查询状态，再启动 IQRAW 采集。")));
+        }
         return;
     }
     if (m_devices.isEmpty()) {
@@ -1578,6 +1878,9 @@ void CapturePage::setBusy(bool busy)
     }
     if (m_ceyearResourceEdit) {
         m_ceyearResourceEdit->setEnabled(!ceyearLocked && !usrp);
+    }
+    if (m_ceyearPresetCombo) {
+        m_ceyearPresetCombo->setEnabled(!ceyearLocked && !usrp);
     }
     if (m_ceyearCenterFrequencyEdit) {
         m_ceyearCenterFrequencyEdit->setEnabled(!ceyearLocked && !usrp);
@@ -1642,6 +1945,12 @@ void CapturePage::finalizeCapture(const UsrpCaptureResult &result, const UsrpCap
     }
     appendLog(result.message);
 
+    if (!result.outputFilePath.isEmpty()) {
+        setCaptureEventFilePath(result.outputFilePath);
+    } else if (!config.outputFilePath.isEmpty()) {
+        setCaptureEventFilePath(config.outputFilePath);
+    }
+
     if (result.success) {
         const int row = m_captureTable->rowCount();
         m_captureTable->insertRow(row);
@@ -1672,6 +1981,7 @@ void CapturePage::finalizeCapture(const UsrpCaptureResult &result, const UsrpCap
         appendValidationMessage(result.message, QStringLiteral("error"));
     }
 
+    endCaptureEventSession(result.success);
     setBusy(false);
 }
 
@@ -1697,6 +2007,8 @@ void CapturePage::finalizeCeyearStatus(const CeyearStatusResult &result)
     if (m_deviceMetric) {
         m_deviceMetric->setValue(result.success ? QStringLiteral("在线") : QStringLiteral("异常"));
     }
+    m_ceyearLastStatusText = result.success ? QStringLiteral("在线") : QStringLiteral("异常");
+    m_ceyearLastStatusAt = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
     updateConnectionSummary();
     m_ceyearBusy = false;
     setBusy(false);
@@ -1722,6 +2034,11 @@ void CapturePage::finalizeCeyearCapture(const CeyearCaptureResult &result, const
 
     appendLog(result.message);
     appendValidationMessage(result.message, result.success ? QStringLiteral("good") : QStringLiteral("error"));
+
+    const QString actualOutputPath = result.outputFilePath.isEmpty() ? config.outputFilePath : result.outputFilePath;
+    if (!actualOutputPath.isEmpty()) {
+        setCaptureEventFilePath(actualOutputPath);
+    }
 
     if (result.success && result.bytesReceived > 0 && m_captureTable) {
         const int row = m_captureTable->rowCount();
@@ -1761,12 +2078,37 @@ void CapturePage::finalizeCeyearCapture(const CeyearCaptureResult &result, const
     m_ceyearBusy = false;
     const bool shouldContinue = m_ceyearContinuousActive
         && config.outputFilePath.endsWith(QStringLiteral(".iqraw"), Qt::CaseInsensitive);
+    const bool commandStarted = std::any_of(result.logs.cbegin(), result.logs.cend(), [](const QString &line) {
+        return line.contains(QStringLiteral("MAN IQ report command sent"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("manual fixed-point IQ report command sent"), Qt::CaseInsensitive);
+    });
+    if (shouldContinue
+        && !result.success
+        && result.bytesReceived == 0
+        && commandStarted
+        && m_ceyearContinuousRetryCount < kCeyearContinuousMaxZeroByteRetries) {
+        ++m_ceyearContinuousRetryCount;
+        appendLog(QStringLiteral("3943B 连续采集第 %1 轮未收到 IQ 数据，将在设备恢复后重试第 %2/%3 次。")
+                      .arg(m_ceyearContinuousRound)
+                      .arg(m_ceyearContinuousRetryCount)
+                      .arg(kCeyearContinuousMaxZeroByteRetries));
+        setBusy(false);
+        m_ceyearRetryCurrentRound = true;
+        if (m_ceyearContinuousTimer) {
+            m_ceyearContinuousTimer->start(kCeyearContinuousRecoveryDelayMs);
+        }
+        return;
+    }
     if (shouldContinue && !result.success) {
         appendLog(QStringLiteral("3943B 连续采集因本轮失败而停止。"));
         cancelCeyearContinuousCapture();
     }
+    if (!shouldContinue || !result.success) {
+        endCaptureEventSession(result.success);
+    }
     setBusy(false);
     if (shouldContinue && result.success) {
+        m_ceyearContinuousRetryCount = 0;
         scheduleNextCeyearContinuousCapture();
         setBusy(false);
     }

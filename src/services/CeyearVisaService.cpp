@@ -20,10 +20,19 @@
 
 namespace
 {
+constexpr qint64 kAcceptableIqShortfallPercent = 1;
+
 bool iqSampleCountAcceptable(qint64 sampleCount, int targetSampleCount)
 {
-    Q_UNUSED(targetSampleCount)
-    return sampleCount > 0;
+    if (sampleCount <= 0) {
+        return false;
+    }
+    if (targetSampleCount <= 0 || sampleCount >= static_cast<qint64>(targetSampleCount)) {
+        return true;
+    }
+
+    const qint64 missing = static_cast<qint64>(targetSampleCount) - sampleCount;
+    return missing * 100 <= static_cast<qint64>(targetSampleCount) * kAcceptableIqShortfallPercent;
 }
 
 QString iqShortfallText(qint64 sampleCount, int targetSampleCount)

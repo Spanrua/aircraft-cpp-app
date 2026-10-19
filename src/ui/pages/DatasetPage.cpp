@@ -23,6 +23,7 @@
 #include <QSaveFile>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QSet>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -164,7 +165,7 @@ QTableWidgetItem *readOnlyItem(const QString &text)
 DatasetPage::DatasetPage(QWidget *parent)
     : WorkflowPage(
         QStringLiteral("数据集管理"),
-        QStringLiteral("按类别挑选样本，生成供训练使用的数据集版本。"),
+        QStringLiteral("唯一人工复核入口：确认候选样本、修正类别，并生成供训练使用的数据集版本。"),
         parent,
         true)
 {
@@ -266,14 +267,35 @@ DatasetPage::DatasetPage(QWidget *parent)
     m_readinessLabel->setProperty("summary", true);
     selectionLayout->addWidget(m_readinessLabel);
 
-    auto *actionsContainer = new QWidget();
-    auto *actions = new QHBoxLayout(actionsContainer);
-    actions->setContentsMargins(0, 0, 0, 0);
-    auto *refreshButton = new QPushButton(QStringLiteral("刷新样本"), actionsContainer);
+    auto *reviewWorkbench = new QWidget();
+    reviewWorkbench->setObjectName(QStringLiteral("DatasetReviewWorkbench"));
+    auto *reviewLayout = new QVBoxLayout(reviewWorkbench);
+    reviewLayout->setContentsMargins(14, 12, 14, 12);
+    reviewLayout->setSpacing(8);
+
+    auto *reviewHeader = new QHBoxLayout();
+    auto *reviewTitle = new QLabel(QStringLiteral("人工复核与训练集管理"), reviewWorkbench);
+    reviewTitle->setObjectName(QStringLiteral("DatasetReviewTitle"));
+    reviewHeader->addWidget(reviewTitle);
+    reviewHeader->addStretch(1);
+    m_reviewSelectionLabel = new QLabel(QStringLiteral("请选择候选事件"), reviewWorkbench);
+    m_reviewSelectionLabel->setObjectName(QStringLiteral("DatasetReviewSelectionLabel"));
+    m_reviewSelectionLabel->setProperty("muted", true);
+    reviewHeader->addWidget(m_reviewSelectionLabel);
+    reviewLayout->addLayout(reviewHeader);
+
+    m_reviewQueueLabel = new QLabel(QStringLiteral("待复核：0 个候选事件 · 快捷键：A 通过 / R 剔除 / P 待复核"), reviewWorkbench);
+    m_reviewQueueLabel->setObjectName(QStringLiteral("DatasetReviewQueueLabel"));
+    m_reviewQueueLabel->setProperty("summary", true);
+    m_reviewQueueLabel->setWordWrap(true);
+    reviewLayout->addWidget(m_reviewQueueLabel);
+
+    auto *filterActions = new QHBoxLayout();
+    auto *refreshButton = new QPushButton(QStringLiteral("刷新样本"), reviewWorkbench);
     refreshButton->setObjectName(QStringLiteral("RefreshDatasetSamplesButton"));
     refreshButton->setProperty("secondary", true);
-    actions->addWidget(refreshButton);
-    m_stateFilter = new QComboBox(actionsContainer);
+    filterActions->addWidget(refreshButton);
+    m_stateFilter = new QComboBox(reviewWorkbench);
     m_stateFilter->setObjectName(QStringLiteral("DatasetSampleStateFilter"));
     m_stateFilter->addItem(QStringLiteral("全部候选"), QStringLiteral("all"));
     m_stateFilter->addItem(QStringLiteral("待复核"), QStringLiteral("待复核"));
@@ -282,48 +304,41 @@ DatasetPage::DatasetPage(QWidget *parent)
     m_stateFilter->addItem(QStringLiteral("复核通过"), QStringLiteral("复核通过"));
     m_stateFilter->addItem(QStringLiteral("已剔除"), QStringLiteral("已剔除"));
     m_stateFilter->setToolTip(QStringLiteral("按候选事件状态或规则建议筛选，连续窗口会合并显示。"));
-    actions->addWidget(m_stateFilter);
-    m_ruleTriageButton = new QPushButton(QStringLiteral("应用高置信规则建议"), actionsContainer);
+    filterActions->addWidget(m_stateFilter);
+    m_signalNoiseFilter = new QComboBox(reviewWorkbench);
+    m_signalNoiseFilter->setObjectName(QStringLiteral("DatasetSignalNoiseFilter"));
+    m_signalNoiseFilter->addItem(QStringLiteral("不按图传模型筛选"), QStringLiteral("all"));
+    m_signalNoiseFilter->addItem(QStringLiteral("仅图传模型判定"), QStringLiteral("signal"));
+    m_signalNoiseFilter->addItem(QStringLiteral("仅纯噪声模型判定"), QStringLiteral("noise"));
+    m_signalNoiseFilter->addItem(QStringLiteral("未经过图传模型"), QStringLiteral("unscored"));
+    m_signalNoiseFilter->setToolTip(
+        QStringLiteral("只按每个窗口的独立模型结果筛选；不会对连续窗口做投票或合并判定。"));
+    filterActions->addWidget(m_signalNoiseFilter);
+    m_ruleTriageButton = new QPushButton(QStringLiteral("应用高置信规则建议"), reviewWorkbench);
     m_ruleTriageButton->setObjectName(QStringLiteral("DatasetApplyRuleTriageButton"));
     m_ruleTriageButton->setProperty("secondary", true);
     m_ruleTriageButton->setToolTip(QStringLiteral("只应用严格规则通过建议；未经过负样本校准的边界样本仍需人工复核。"));
-    actions->addWidget(m_ruleTriageButton);
-    actions->addStretch(1);
-    contentLayout()->addWidget(actionsContainer);
-
-    auto *reviewPanel = new QWidget();
-    reviewPanel->setObjectName(QStringLiteral("DatasetReviewPanel"));
-    auto *reviewLayout = new QVBoxLayout(reviewPanel);
-    reviewLayout->setContentsMargins(14, 12, 14, 12);
-    reviewLayout->setSpacing(8);
-    auto *reviewHeader = new QHBoxLayout();
-    auto *reviewTitle = new QLabel(QStringLiteral("候选事件复核与类别修正"), reviewPanel);
-    reviewTitle->setObjectName(QStringLiteral("DatasetReviewTitle"));
-    reviewHeader->addWidget(reviewTitle);
-    reviewHeader->addStretch(1);
-    m_reviewSelectionLabel = new QLabel(QStringLiteral("请选择样本"), reviewPanel);
-    m_reviewSelectionLabel->setObjectName(QStringLiteral("DatasetReviewSelectionLabel"));
-    m_reviewSelectionLabel->setProperty("muted", true);
-    reviewHeader->addWidget(m_reviewSelectionLabel);
-    reviewLayout->addLayout(reviewHeader);
+    filterActions->addWidget(m_ruleTriageButton);
+    filterActions->addStretch(1);
+    reviewLayout->addLayout(filterActions);
 
     auto *reviewActions = new QHBoxLayout();
-    m_labelCombo = new QComboBox(reviewPanel);
+    m_labelCombo = new QComboBox(reviewWorkbench);
     m_labelCombo->setObjectName(QStringLiteral("DatasetReviewLabelCombo"));
     m_labelCombo->addItem(QStringLiteral("选择标准类别"), QString());
     for (const QString &label : kTrainingLabels) {
         m_labelCombo->addItem(label, label);
     }
-    m_applyLabelButton = new QPushButton(QStringLiteral("应用类别"), reviewPanel);
+    m_applyLabelButton = new QPushButton(QStringLiteral("应用类别"), reviewWorkbench);
     m_applyLabelButton->setObjectName(QStringLiteral("DatasetApplyLabelButton"));
     m_applyLabelButton->setProperty("secondary", true);
-    m_approveButton = new QPushButton(QStringLiteral("复核通过"), reviewPanel);
+    m_approveButton = new QPushButton(QStringLiteral("复核通过"), reviewWorkbench);
     m_approveButton->setObjectName(QStringLiteral("DatasetMarkApprovedButton"));
     m_approveButton->setProperty("primary", true);
-    m_rejectButton = new QPushButton(QStringLiteral("剔除样本"), reviewPanel);
+    m_rejectButton = new QPushButton(QStringLiteral("剔除样本"), reviewWorkbench);
     m_rejectButton->setObjectName(QStringLiteral("DatasetMarkRejectedButton"));
     m_rejectButton->setProperty("secondary", true);
-    m_pendingButton = new QPushButton(QStringLiteral("设为待复核"), reviewPanel);
+    m_pendingButton = new QPushButton(QStringLiteral("设为待复核"), reviewWorkbench);
     m_pendingButton->setObjectName(QStringLiteral("DatasetMarkPendingButton"));
     m_pendingButton->setProperty("secondary", true);
     reviewActions->addWidget(m_labelCombo, 1);
@@ -333,17 +348,33 @@ DatasetPage::DatasetPage(QWidget *parent)
     reviewActions->addWidget(m_pendingButton);
     reviewLayout->addLayout(reviewActions);
 
-    auto *spectrogramTitle = new QLabel(QStringLiteral("候选框选时频图（专家复核）"), reviewPanel);
+    const auto addReviewShortcut = [this](const QKeySequence &sequence, const QString &objectName,
+                                          const QString &state) {
+        auto *shortcut = new QShortcut(sequence, this);
+        shortcut->setObjectName(objectName);
+        shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+        connect(shortcut, &QShortcut::activated, this, [this, state]() {
+            if (m_labelCombo && m_labelCombo->hasFocus()) {
+                return;
+            }
+            applyReviewToSelection(state);
+        });
+    };
+    addReviewShortcut(QKeySequence(Qt::Key_A), QStringLiteral("DatasetApproveShortcut"), QStringLiteral("复核通过"));
+    addReviewShortcut(QKeySequence(Qt::Key_R), QStringLiteral("DatasetRejectShortcut"), QStringLiteral("已剔除"));
+    addReviewShortcut(QKeySequence(Qt::Key_P), QStringLiteral("DatasetPendingShortcut"), QStringLiteral("待复核"));
+
+    auto *spectrogramTitle = new QLabel(QStringLiteral("候选框选时频图（专家复核）"), reviewWorkbench);
     spectrogramTitle->setObjectName(QStringLiteral("DatasetSpectrogramTitle"));
     reviewLayout->addWidget(spectrogramTitle);
-    m_spectrogramReviewWidget = new SpectrogramReviewWidget(reviewPanel);
+    m_spectrogramReviewWidget = new SpectrogramReviewWidget(reviewWorkbench);
     reviewLayout->addWidget(m_spectrogramReviewWidget);
-    m_spectrogramPathLabel = new QLabel(QStringLiteral("选择候选事件后加载候选总览图。"), reviewPanel);
+    m_spectrogramPathLabel = new QLabel(QStringLiteral("选择候选事件后加载候选总览图。"), reviewWorkbench);
     m_spectrogramPathLabel->setObjectName(QStringLiteral("DatasetSpectrogramPathLabel"));
     m_spectrogramPathLabel->setProperty("muted", true);
     m_spectrogramPathLabel->setWordWrap(true);
     reviewLayout->addWidget(m_spectrogramPathLabel);
-    contentLayout()->addWidget(reviewPanel);
+    contentLayout()->addWidget(reviewWorkbench);
 
     m_pageMessage = new QLabel();
     m_pageMessage->setObjectName(QStringLiteral("DatasetPageMessage"));
@@ -439,6 +470,9 @@ DatasetPage::DatasetPage(QWidget *parent)
     connect(m_stateFilter, &QComboBox::currentTextChanged, this, [this]() {
         loadSamples();
     });
+    connect(m_signalNoiseFilter, &QComboBox::currentTextChanged, this, [this]() {
+        loadSamples();
+    });
     connect(m_ruleTriageButton, &QPushButton::clicked, this, &DatasetPage::applyRuleTriage);
     connect(m_categoryTable, &QTableWidget::itemChanged, this, &DatasetPage::handleCategoryItemChanged);
     connect(m_table, &QTableWidget::itemSelectionChanged, this, &DatasetPage::updateReviewPanel);
@@ -489,6 +523,22 @@ void DatasetPage::loadSamples()
         if (!CandidateReviewService::matchesFilter(group, filter)) {
             continue;
         }
+        const QString signalNoiseFilter = m_signalNoiseFilter
+            ? m_signalNoiseFilter->currentData().toString()
+            : QStringLiteral("all");
+        if (signalNoiseFilter != QStringLiteral("all")) {
+            bool hasMatchingWindow = false;
+            for (const int sampleIndex : group.sampleIndices) {
+                if (sampleIndex >= 0 && sampleIndex < m_samples.size()
+                    && matchesSignalNoiseFilter(m_samples.at(sampleIndex))) {
+                    hasMatchingWindow = true;
+                    break;
+                }
+            }
+            if (!hasMatchingWindow) {
+                continue;
+            }
+        }
 
         const int row = m_table->rowCount();
         m_table->insertRow(row);
@@ -528,6 +578,22 @@ void DatasetPage::loadSamples()
     if (m_nextTrainingButton) {
         m_nextTrainingButton->setEnabled(!m_versions.isEmpty());
     }
+    if (m_reviewQueueLabel) {
+        int pendingCount = 0;
+        int spotCheckCount = 0;
+        for (const CandidateReviewGroup &group : m_candidateGroups) {
+            if (group.review.reviewState == QStringLiteral("待复核")) {
+                ++pendingCount;
+            } else if (group.review.reviewState == QStringLiteral("待抽检")) {
+                ++spotCheckCount;
+            }
+        }
+        m_reviewQueueLabel->setText(QStringLiteral("待复核：%1 个候选事件%2 · 快捷键：A 通过 / R 剔除 / P 待复核")
+                                         .arg(pendingCount)
+                                         .arg(spotCheckCount > 0
+                                                  ? QStringLiteral("；待抽检：%1 个").arg(spotCheckCount)
+                                                  : QString()));
+    }
     rebuildCategoryTable();
     loadVersionTable();
     updateSelectionSummary();
@@ -545,6 +611,9 @@ void DatasetPage::rebuildCategoryTable()
     const QSignalBlocker categoryTableBlocker(m_categoryTable);
     QMap<QString, CategorySummary> categories;
     for (const SampleRecord &sample : m_samples) {
+        if (!matchesSignalNoiseFilter(sample)) {
+            continue;
+        }
         CategorySummary &summary = categories[sampleLabel(sample)];
         ++summary.total;
         if (qualityState(sample) == QStringLiteral("已剔除")) {
@@ -615,6 +684,9 @@ void DatasetPage::updateSelectionSummary()
     int pendingCount = 0;
     int rejectedCount = 0;
     for (const SampleRecord &sample : m_samples) {
+        if (!matchesSignalNoiseFilter(sample)) {
+            continue;
+        }
         if (!labels.contains(sampleLabel(sample))) {
             continue;
         }
@@ -668,6 +740,9 @@ void DatasetPage::updateSelectionSummary()
         int missingCount = 0;
         for (const SampleRecord &sample : m_samples) {
             const QString label = sampleLabel(sample);
+            if (!matchesSignalNoiseFilter(sample)) {
+                continue;
+            }
             if (!labels.contains(label) || qualityState(sample) == QStringLiteral("已剔除")) {
                 continue;
             }
@@ -1258,7 +1333,23 @@ void DatasetPage::applyRuleTriage()
 
 bool DatasetPage::isSampleEligible(const SampleRecord &sample) const
 {
-    return !sample.sampleFilePath.trimmed().isEmpty() && QFileInfo::exists(sample.sampleFilePath);
+    return matchesSignalNoiseFilter(sample)
+        && !sample.sampleFilePath.trimmed().isEmpty()
+        && QFileInfo::exists(sample.sampleFilePath);
+}
+
+bool DatasetPage::matchesSignalNoiseFilter(const SampleRecord &sample) const
+{
+    const QString filter = m_signalNoiseFilter
+        ? m_signalNoiseFilter->currentData().toString()
+        : QStringLiteral("all");
+    if (filter == QStringLiteral("all")) {
+        return true;
+    }
+    if (filter == QStringLiteral("unscored")) {
+        return sample.signalNoiseLabel.trimmed().isEmpty();
+    }
+    return sample.signalNoiseLabel.trimmed() == filter;
 }
 
 bool DatasetPage::isPartialSample(const SampleRecord &sample) const

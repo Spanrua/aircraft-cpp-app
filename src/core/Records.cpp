@@ -96,6 +96,13 @@ QJsonObject SampleRecord::toJson() const
     insertString(&json, QStringLiteral("qualityStatus"), qualityStatus);
     insertString(&json, QStringLiteral("pipelineVersion"), pipelineVersion);
     insertString(&json, QStringLiteral("sourceName"), sourceName);
+    if (signalNoiseProbability >= 0.0) {
+        json.insert(QStringLiteral("signalNoiseProbability"), signalNoiseProbability);
+    }
+    json.insert(QStringLiteral("signalNoiseThreshold"), signalNoiseThreshold);
+    insertString(&json, QStringLiteral("signalNoiseLabel"), signalNoiseLabel);
+    insertString(&json, QStringLiteral("signalNoiseModelPath"), signalNoiseModelPath);
+    insertString(&json, QStringLiteral("signalNoiseRunId"), signalNoiseRunId);
     return json;
 }
 
@@ -182,6 +189,11 @@ SampleRecord SampleRecord::fromJson(const QJsonObject &json)
     record.qualityStatus = json.value("qualityStatus").toString();
     record.pipelineVersion = json.value("pipelineVersion").toString();
     record.sourceName = json.value("sourceName").toString();
+    record.signalNoiseProbability = jsonDouble(json, QStringLiteral("signalNoiseProbability"), -1.0);
+    record.signalNoiseThreshold = jsonDouble(json, QStringLiteral("signalNoiseThreshold"), 0.5);
+    record.signalNoiseLabel = json.value(QStringLiteral("signalNoiseLabel")).toString();
+    record.signalNoiseModelPath = json.value(QStringLiteral("signalNoiseModelPath")).toString();
+    record.signalNoiseRunId = json.value(QStringLiteral("signalNoiseRunId")).toString();
     return record;
 }
 
@@ -304,6 +316,13 @@ QJsonObject TrainingRunRecord::toJson() const
     json.insert(QStringLiteral("modelAvailable"),
                modelAvailable ? QStringLiteral("true") : QStringLiteral("false"));
     insertString(&json, QStringLiteral("splitSummaryPath"), splitSummaryPath);
+    insertString(&json, QStringLiteral("modelVerificationStatus"), modelVerificationStatus);
+    insertString(&json, QStringLiteral("modelVerificationMessage"), modelVerificationMessage);
+    QJsonArray modelClassNamesJson;
+    for (const QString &className : modelClassNames) {
+        modelClassNamesJson.append(className);
+    }
+    json.insert(QStringLiteral("modelClassNames"), modelClassNamesJson);
     return json;
 }
 
@@ -346,6 +365,19 @@ TrainingRunRecord TrainingRunRecord::fromJson(const QJsonObject &json)
         jsonBool(json, QStringLiteral("available"),
                  jsonBool(json, QStringLiteral("model_available"))));
     record.splitSummaryPath = json.value(QStringLiteral("splitSummaryPath")).toString();
+    record.modelVerificationStatus = json.value(QStringLiteral("modelVerificationStatus")).toString();
+    if (record.modelVerificationStatus.isEmpty()) {
+        record.modelVerificationStatus = record.pipelineVersion == QStringLiteral("external-import")
+            ? QStringLiteral("unverified") : QStringLiteral("verified");
+    }
+    record.modelVerificationMessage = json.value(QStringLiteral("modelVerificationMessage")).toString();
+    const QJsonArray modelClassNamesJson = json.value(QStringLiteral("modelClassNames")).toArray();
+    for (const QJsonValue &value : modelClassNamesJson) {
+        const QString className = value.toString().trimmed();
+        if (!className.isEmpty()) {
+            record.modelClassNames.append(className);
+        }
+    }
     return record;
 }
 

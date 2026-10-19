@@ -2,10 +2,10 @@
 
 #include <QDir>
 #include <QEventLoop>
-#include <QFile>
 #include <QFileInfo>
 #include <QAbstractSocket>
 #include <QHostAddress>
+#include <QSaveFile>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
@@ -70,15 +70,15 @@ bool CeyearIqReceiver::start(const CeyearIqReceiverConfig &config, QString *erro
         }
         return false;
     }
-    if (!openOutputFile(error)) {
-        return false;
-    }
 
     QHostAddress address;
     if (!address.setAddress(m_config.bindAddress.trimmed())) {
         if (error) {
             *error = QStringLiteral("Invalid bind address: %1").arg(m_config.bindAddress);
         }
+        return false;
+    }
+    if (!openOutputFile(error)) {
         return false;
     }
 
@@ -104,6 +104,8 @@ bool CeyearIqReceiver::start(const CeyearIqReceiverConfig &config, QString *erro
             if (error) {
                 *error = QStringLiteral("TCP listen failed: %1").arg(m_tcpServer->errorString());
             }
+            m_tcpServer.reset();
+            discardOutputFile();
             return false;
         }
         m_boundPort = m_tcpServer->serverPort();
@@ -123,6 +125,8 @@ bool CeyearIqReceiver::start(const CeyearIqReceiverConfig &config, QString *erro
             if (error) {
                 *error = QStringLiteral("UDP bind failed: %1").arg(m_udpSocket->errorString());
             }
+            m_udpSocket.reset();
+            discardOutputFile();
             return false;
         }
         m_boundPort = m_udpSocket->localPort();
@@ -205,9 +209,12 @@ CeyearIqReceiverResult CeyearIqReceiver::stop()
         m_udpSocket->close();
         m_udpSocket.reset();
     }
+    bool fileCommitOk = true;
     if (m_file) {
-        m_file->flush();
-        m_file->close();
+        fileCommitOk = m_file->flush() && m_file->commit();
+        if (!fileCommitOk) {
+            m_file->cancelWriting();
+        }
         m_file.reset();
     }
 
@@ -218,12 +225,17 @@ CeyearIqReceiverResult CeyearIqReceiver::stop()
     if (wasRunning) {
         emit stopped();
     }
-    return makeResult(m_config.targetSampleCount > 0 ? reachedTarget : hadBytes,
-                      reachedTarget
+    const bool captureSuccess = (m_config.targetSampleCount > 0 ? reachedTarget : hadBytes)
+        && fileCommitOk;
+    const QString message = !fileCommitOk
+        ? QStringLiteral("Failed to commit PC IQ output file.")
+        : reachedTarget
         ? QStringLiteral("3943B target IQ sample count saved to PC.")
         : hadBytes
-        ? QStringLiteral("3943B IQ data stream went idle before target sample count was reached.")
-        : QStringLiteral("No 3943B IQ bytes were received."));
+        ? QStringLiteral("3943B IQ data stream went idle for %1 ms before target sample count was reached.")
+              .arg(m_config.dataIdleFinishMs)
+        : QStringLiteral("No 3943B IQ bytes were received.");
+    return makeResult(captureSuccess, message);
 }
 
 quint16 CeyearIqReceiver::boundPort() const
@@ -252,7 +264,7 @@ bool CeyearIqReceiver::openOutputFile(QString *error)
         return false;
     }
 
-    m_file = std::make_unique<QFile>(m_config.outputFilePath);
+    m_file = std::make_unique<QSaveFile>(m_config.outputFilePath);
     if (!m_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         if (error) {
             *error = QStringLiteral("Cannot open PC output file: %1").arg(m_file->errorString());
@@ -261,6 +273,15 @@ bool CeyearIqReceiver::openOutputFile(QString *error)
         return false;
     }
     return true;
+}
+
+void CeyearIqReceiver::discardOutputFile()
+{
+    if (!m_file) {
+        return;
+    }
+    m_file->cancelWriting();
+    m_file.reset();
 }
 
 void CeyearIqReceiver::appendBytes(const QByteArray &bytes)

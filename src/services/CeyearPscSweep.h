@@ -61,4 +61,19 @@ QStringList ceyearPscSweepCommandLines(const CeyearPscSweepConfig &config);
 QStringList ceyearPscSweepStopCommandLines();
 bool saveCeyearPscFramesCsv(const QString &filePath,
                             const QVector<CeyearPscFrame> &frames,
+                            const QString &droneId,
+                            const QString &model,
+                            const QString &behaviorCode,
+                            const QString &behaviorName,
                             QString *error = nullptr);
+
+bool loadCeyearPscFramesCsv(const QString &filePath,
+                            QVector<CeyearPscFrame> *frames,
+                            QString *error = nullptr);
+
+inline bool saveCeyearPscFramesCsv(const QString &filePath,
+                                   const QVector<CeyearPscFrame> &frames,
+                                   QString *error)
+{
+    return saveCeyearPscFramesCsv(filePath, frames, {}, {}, {}, {}, error);
+}

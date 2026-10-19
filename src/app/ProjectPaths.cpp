@@ -29,6 +29,13 @@ QString ascendForMarker(QString startPath)
 
 QString ProjectPaths::repositoryRoot()
 {
+    const QByteArray configuredCppAppRoot = qgetenv("AIRCRAFT_CPP_APP_ROOT");
+    if (!configuredCppAppRoot.isEmpty()) {
+        const QFileInfo configuredRoot(QString::fromLocal8Bit(configuredCppAppRoot));
+        if (configuredRoot.exists() && configuredRoot.isDir()) {
+            return configuredRoot.absoluteFilePath();
+        }
+    }
     const QString applicationDir = QCoreApplication::applicationDirPath();
     return ascendForMarker(applicationDir);
 }
@@ -62,6 +69,10 @@ QString ProjectPaths::aircraftProjectRoot()
 
 QString ProjectPaths::dataDirectory()
 {
+    const QByteArray configured = qgetenv("AIRCRAFT_DATA_DIR");
+    if (!configured.isEmpty()) {
+        return QFileInfo(QString::fromLocal8Bit(configured)).absoluteFilePath();
+    }
     return QDir(workspaceRoot()).filePath("data");
 }
 
@@ -95,6 +106,16 @@ QString ProjectPaths::modelsDirectory()
     return QDir(dataDirectory()).filePath("models");
 }
 
+QString ProjectPaths::signalNoiseModelDirectory()
+{
+    return QDir(modelsDirectory()).filePath("signal_noise");
+}
+
+QString ProjectPaths::signalCleaningRunsDirectory()
+{
+    return QDir(exportsDirectory()).filePath("signal_cleaning");
+}
+
 QString ProjectPaths::exportsDirectory()
 {
     return QDir(dataDirectory()).filePath("exports");
@@ -114,6 +135,8 @@ bool ProjectPaths::ensureRuntimeDirectories(QString *errorMessage)
         preprocessRunsDirectory(),
         preprocessProfilesDirectory(),
         modelsDirectory(),
+        signalNoiseModelDirectory(),
+        signalCleaningRunsDirectory(),
         exportsDirectory(),
         trainingCacheDirectory(),
     };

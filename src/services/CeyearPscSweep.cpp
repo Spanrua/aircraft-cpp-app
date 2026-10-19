@@ -4,8 +4,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLocale>
+#include <QMap>
 #include <QTextStream>
 #include <QtGlobal>
+
+#include <algorithm>
 
 namespace
 {
@@ -102,7 +105,23 @@ QStringList ceyearPscSweepStopCommandLines()
     };
 }
 
-bool saveCeyearPscFramesCsv(const QString &filePath, const QVector<CeyearPscFrame> &frames, QString *error)
+namespace
+{
+QString csvField(const QString &value)
+{
+    QString escaped = value;
+    escaped.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+    return QStringLiteral("\"%1\"").arg(escaped);
+}
+}
+
+bool saveCeyearPscFramesCsv(const QString &filePath,
+                            const QVector<CeyearPscFrame> &frames,
+                            const QString &droneId,
+                            const QString &model,
+                            const QString &behaviorCode,
+                            const QString &behaviorName,
+                            QString *error)
 {
     if (frames.isEmpty()) {
         if (error) {
@@ -128,7 +147,7 @@ bool saveCeyearPscFramesCsv(const QString &filePath, const QVector<CeyearPscFram
     }
 
     QTextStream out(&file);
-    out << "frame_index,bin_index,frequency_hz,level_dbuv\n";
+    out << "frame_index,bin_index,frequency_hz,level_dbuv,drone_id,model,behavior_code,behavior_name\n";
     for (int frameIndex = 0; frameIndex < frames.size(); ++frameIndex) {
         const CeyearPscFrame &frame = frames.at(frameIndex);
         for (int binIndex = 0; binIndex < frame.bins.size(); ++binIndex) {
@@ -136,7 +155,11 @@ bool saveCeyearPscFramesCsv(const QString &filePath, const QVector<CeyearPscFram
             out << frameIndex << ','
                 << binIndex << ','
                 << QLocale::c().toString(bin.frequencyHz, 'f', 0) << ','
-                << QLocale::c().toString(bin.levelDbuv, 'f', 1) << '\n';
+                << QLocale::c().toString(bin.levelDbuv, 'f', 1) << ','
+                << csvField(droneId) << ','
+                << csvField(model) << ','
+                << csvField(behaviorCode) << ','
+                << csvField(behaviorName) << '\n';
         }
     }
     out.flush();
@@ -153,6 +176,132 @@ bool saveCeyearPscFramesCsv(const QString &filePath, const QVector<CeyearPscFram
             *error = QStringLiteral("Cannot close PSC sweep output file: %1").arg(file.errorString());
         }
         return false;
+    }
+
+    return true;
+}
+
+bool loadCeyearPscFramesCsv(const QString &filePath,
+                            QVector<CeyearPscFrame> *frames,
+                            QString *error)
+{
+    if (!frames) {
+        if (error) {
+            *error = QStringLiteral("PSC CSV 输出容器为空");
+        }
+        return false;
+    }
+
+    frames->clear();
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error) {
+            *error = QStringLiteral("无法打开 PSC CSV：%1").arg(file.errorString());
+        }
+        return false;
+    }
+
+    QTextStream input(&file);
+    QStringList header = input.readLine().split(QLatin1Char(','));
+    if (header.isEmpty() || (header.size() == 1 && header.first().trimmed().isEmpty())) {
+        if (error) {
+            *error = QStringLiteral("PSC CSV 缺少表头");
+        }
+        return false;
+    }
+
+    QMap<QString, int> columns;
+    for (int index = 0; index < header.size(); ++index) {
+        QString name = header.at(index).trimmed();
+        if (index == 0 && !name.isEmpty() && name.at(0) == QChar::ByteOrderMark) {
+            name.remove(0, 1);
+        }
+        columns.insert(name, index);
+    }
+
+    const QStringList requiredColumns = {
+        QStringLiteral("frame_index"),
+        QStringLiteral("bin_index"),
+        QStringLiteral("frequency_hz"),
+        QStringLiteral("level_dbuv"),
+    };
+    for (const QString &name : requiredColumns) {
+        if (!columns.contains(name)) {
+            if (error) {
+                *error = QStringLiteral("PSC CSV 缺少必需列：%1").arg(name);
+            }
+            return false;
+        }
+    }
+
+    const int maximumRequiredColumn = std::max({
+        columns.value(QStringLiteral("frame_index")),
+        columns.value(QStringLiteral("bin_index")),
+        columns.value(QStringLiteral("frequency_hz")),
+        columns.value(QStringLiteral("level_dbuv")),
+    });
+    QMap<int, QVector<QPair<int, CeyearPscBin>>> indexedFrames;
+    int lineNumber = 1;
+    while (!input.atEnd()) {
+        ++lineNumber;
+        const QString line = input.readLine();
+        if (line.trimmed().isEmpty()) {
+            continue;
+        }
+
+        const QStringList fields = line.split(QLatin1Char(','));
+        if (fields.size() <= maximumRequiredColumn) {
+            if (error) {
+                *error = QStringLiteral("PSC CSV 第 %1 行列数不足").arg(lineNumber);
+            }
+            return false;
+        }
+
+        bool frameOk = false;
+        bool binOk = false;
+        bool frequencyOk = false;
+        bool levelOk = false;
+        const int frameIndex = fields.at(columns.value(QStringLiteral("frame_index"))).trimmed().toInt(&frameOk);
+        const int binIndex = fields.at(columns.value(QStringLiteral("bin_index"))).trimmed().toInt(&binOk);
+        const double frequencyHz = fields.at(columns.value(QStringLiteral("frequency_hz"))).trimmed().toDouble(&frequencyOk);
+        const double levelDbuv = fields.at(columns.value(QStringLiteral("level_dbuv"))).trimmed().toDouble(&levelOk);
+        if (!frameOk || !binOk || !frequencyOk || !levelOk
+            || frameIndex < 0 || binIndex < 0) {
+            if (error) {
+                *error = QStringLiteral("PSC CSV 第 %1 行包含无效数值").arg(lineNumber);
+            }
+            return false;
+        }
+
+        // 3943B 导出的 PSC 记录可能包含 frequency_hz=0、level_dbuv=200.0 的无效哨兵 bin。
+        // 该 bin 不属于任何有效频点，应跳过而非中止整份离线回放。
+        if (frequencyHz <= 0.0) {
+            continue;
+        }
+
+        indexedFrames[frameIndex].append({binIndex, {frequencyHz, levelDbuv}});
+    }
+
+    if (indexedFrames.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("PSC CSV 不包含任何帧");
+        }
+        return false;
+    }
+
+    frames->reserve(indexedFrames.size());
+    for (auto it = indexedFrames.cbegin(); it != indexedFrames.cend(); ++it) {
+        QVector<QPair<int, CeyearPscBin>> bins = it.value();
+        std::sort(bins.begin(), bins.end(), [](const auto &left, const auto &right) {
+            return left.first < right.first;
+        });
+
+        CeyearPscFrame frame;
+        frame.bins.reserve(bins.size());
+        for (const auto &indexedBin : bins) {
+            frame.bins.append(indexedBin.second);
+        }
+        frames->append(frame);
     }
 
     return true;

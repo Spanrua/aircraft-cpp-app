@@ -187,6 +187,20 @@ void RecognitionProcessRunner::consumeLine(const QByteArray &line)
         m_result.predictedType = json.value(QStringLiteral("predicted_type")).toString();
         m_result.predictedIndividual = json.value(QStringLiteral("predicted_individual")).toString();
         m_result.confidence = json.value(QStringLiteral("confidence")).toDouble();
+        m_result.classProbabilities.clear();
+        for (const QJsonValue &value : json.value(QStringLiteral("class_probabilities")).toArray()) {
+            const QJsonObject probability = value.toObject();
+            const QString label = probability.value(QStringLiteral("label")).toString().trimmed();
+            if (label.isEmpty()) {
+                continue;
+            }
+            const double rawValue = probability.contains(QStringLiteral("probability"))
+                ? probability.value(QStringLiteral("probability")).toDouble()
+                : probability.value(QStringLiteral("confidence")).toDouble() / 100.0;
+            if (rawValue >= 0.0) {
+                m_result.classProbabilities.insert(label, rawValue);
+            }
+        }
         m_result.device = json.value(QStringLiteral("device")).toString();
         m_result.modelSize = json.value(QStringLiteral("model_size")).toString();
         m_result.featureMode = json.value(QStringLiteral("feature_mode")).toString();
@@ -227,6 +241,11 @@ void RecognitionProcessRunner::finishResult(int exitCode, QProcess::ExitStatus e
         return;
     }
     m_resultEmitted = true;
+    QProcess *finishedProcess = m_process;
+    m_process = nullptr;
+    if (finishedProcess) {
+        finishedProcess->deleteLater();
+    }
     if (!m_completedEventSeen) {
         m_result.success = false;
         m_result.modelPath = m_request.modelPath;
@@ -241,10 +260,6 @@ void RecognitionProcessRunner::finishResult(int exitCode, QProcess::ExitStatus e
         emit failed(m_result.message);
     }
     emit finished(m_result);
-    if (m_process) {
-        m_process->deleteLater();
-        m_process = nullptr;
-    }
 }
 
 void RecognitionProcessRunner::appendLog(const QString &message)

@@ -8,7 +8,10 @@
 
 #include <QAbstractItemView>
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -24,9 +27,31 @@
 #include <QVBoxLayout>
 
 #include <exception>
+#include <limits>
 
 namespace
 {
+constexpr unsigned long kShutdownThreadWaitMs = 2000;
+constexpr int kOfflineReplayIntervalMs = 80;
+
+void stopThreadForShutdown(QThread *thread)
+{
+    if (!thread || !thread->isRunning()) {
+        return;
+    }
+    thread->requestInterruption();
+    thread->quit();
+    if (thread->wait(kShutdownThreadWaitMs)) {
+        return;
+    }
+
+    qWarning() << "PSC command thread did not exit during shutdown; terminating it.";
+    thread->terminate();
+    if (!thread->wait(kShutdownThreadWaitMs)) {
+        qFatal("SweepPage command thread did not terminate during shutdown.");
+    }
+}
+
 QTableWidgetItem *centeredItem(const QString &text)
 {
     auto *item = new QTableWidgetItem(text);
@@ -92,6 +117,9 @@ SweepPage::SweepPage(QWidget *parent)
     m_autoSaveTimer = new QTimer(this);
     m_autoSaveTimer->setInterval(10000); // 10秒
     connect(m_autoSaveTimer, &QTimer::timeout, this, &SweepPage::autoSaveSweepData);
+    m_offlineReplayTimer = new QTimer(this);
+    m_offlineReplayTimer->setInterval(kOfflineReplayIntervalMs);
+    connect(m_offlineReplayTimer, &QTimer::timeout, this, &SweepPage::playNextOfflineFrame);
 
     buildUi();
 }
@@ -106,6 +134,9 @@ SweepPage::SweepPage(std::unique_ptr<ICeyearVisaService> ceyearService, QWidget 
     m_autoSaveTimer = new QTimer(this);
     m_autoSaveTimer->setInterval(10000); // 10秒
     connect(m_autoSaveTimer, &QTimer::timeout, this, &SweepPage::autoSaveSweepData);
+    m_offlineReplayTimer = new QTimer(this);
+    m_offlineReplayTimer->setInterval(kOfflineReplayIntervalMs);
+    connect(m_offlineReplayTimer, &QTimer::timeout, this, &SweepPage::playNextOfflineFrame);
 
     buildUi();
 }
@@ -115,15 +146,15 @@ SweepPage::~SweepPage()
     if (m_autoSaveTimer) {
         m_autoSaveTimer->stop();
     }
-    if (m_pscCommandThread) {
-        m_pscCommandThread->quit();
-        m_pscCommandThread->wait();
-    }
     if (m_pscReceiver) {
         m_pscReceiver->disconnect(this);
         m_pscReceiver->stop();
-        m_pscReceiver.reset();
     }
+    if (m_ceyearService) {
+        m_ceyearService->requestStop();
+    }
+    stopThreadForShutdown(m_pscCommandThread);
+    m_pscReceiver.reset();
 }
 
 void SweepPage::appendPscFrameForTest(const CeyearPscFrame &frame)
@@ -134,6 +165,11 @@ void SweepPage::appendPscFrameForTest(const CeyearPscFrame &frame)
 void SweepPage::setCandidateRowsForTest(const QVector<CeyearPscCandidate> &candidates)
 {
     setCandidateRows(candidates);
+}
+
+void SweepPage::startOfflineReplayForTest(const QVector<CeyearPscFrame> &frames)
+{
+    startOfflineReplay(frames, QStringLiteral("test.csv"));
 }
 
 void SweepPage::buildUi()
@@ -176,9 +212,12 @@ void SweepPage::buildUi()
     m_saveButton = new QPushButton(QStringLiteral("保存扫频数据"), segmentGroup);
     m_saveButton->setObjectName(QStringLiteral("SavePscSweepDataButton"));
     m_saveButton->setEnabled(false);
+    m_importButton = new QPushButton(QStringLiteral("导入并回放 CSV"), segmentGroup);
+    m_importButton->setObjectName(QStringLiteral("ImportPscSweepCsvButton"));
     buttonLayout->addWidget(m_startButton);
     buttonLayout->addWidget(m_stopButton);
     buttonLayout->addWidget(m_saveButton);
+    buttonLayout->addWidget(m_importButton);
     segmentLayout->addLayout(buttonLayout);
     m_statusLabel = new QLabel(QStringLiteral("等待扫频"), segmentGroup);
     m_statusLabel->setObjectName(QStringLiteral("PscSweepStatusLabel"));
@@ -221,6 +260,7 @@ void SweepPage::buildUi()
     connect(m_startButton, &QPushButton::clicked, this, &SweepPage::startSweep);
     connect(m_stopButton, &QPushButton::clicked, this, &SweepPage::stopSweep);
     connect(m_saveButton, &QPushButton::clicked, this, &SweepPage::saveSweepData);
+    connect(m_importButton, &QPushButton::clicked, this, &SweepPage::importOfflineSweepCsv);
 }
 
 void SweepPage::seedDefaultSegments()
@@ -299,7 +339,7 @@ CeyearPscSweepConfig SweepPage::sweepConfigFromTable() const
 
 void SweepPage::startSweep()
 {
-    if (m_pscCommandThread) {
+    if (m_pscCommandThread || m_offlineReplayActive) {
         return;
     }
 
@@ -334,6 +374,10 @@ void SweepPage::startSweep()
 
 void SweepPage::stopSweep()
 {
+    if (m_offlineReplayActive) {
+        stopOfflineReplay();
+        return;
+    }
     if (m_pscCommandThread) {
         return;
     }
@@ -351,6 +395,134 @@ void SweepPage::stopSweep()
         m_statusLabel->setText(QStringLiteral("Stopping PSC sweep..."));
     }
     stopPscSweepAsync();
+}
+
+void SweepPage::importOfflineSweepCsv()
+{
+    if (m_pscSweepActive || m_pscCommandThread || m_offlineReplayActive) {
+        return;
+    }
+
+    const QString initialDirectory = QDir(ProjectPaths::dataDirectory()).filePath(QStringLiteral("demo-sweep"));
+    const QString filePath = QFileDialog::getOpenFileName(this,
+                                                          QStringLiteral("选择 PSC 扫频 CSV"),
+                                                          initialDirectory,
+                                                          QStringLiteral("PSC 扫频 CSV (*.csv)"));
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    QVector<CeyearPscFrame> frames;
+    QString error;
+    if (!loadCeyearPscFramesCsv(filePath, &frames, &error)) {
+        if (m_statusLabel) {
+            m_statusLabel->setText(QStringLiteral("离线扫频数据导入失败：%1").arg(error));
+        }
+        return;
+    }
+
+    startOfflineReplay(frames, filePath);
+}
+
+void SweepPage::startOfflineReplay(const QVector<CeyearPscFrame> &frames, const QString &sourcePath)
+{
+    if (frames.isEmpty() || m_offlineReplayActive) {
+        return;
+    }
+
+    double minimumFrequencyHz = std::numeric_limits<double>::max();
+    double maximumFrequencyHz = std::numeric_limits<double>::lowest();
+    for (const CeyearPscFrame &frame : frames) {
+        for (const CeyearPscBin &bin : frame.bins) {
+            minimumFrequencyHz = qMin(minimumFrequencyHz, bin.frequencyHz);
+            maximumFrequencyHz = qMax(maximumFrequencyHz, bin.frequencyHz);
+        }
+    }
+
+    CeyearPscSweepConfig config = sweepConfigFromTable();
+    if (minimumFrequencyHz <= maximumFrequencyHz) {
+        if (qFuzzyCompare(minimumFrequencyHz, maximumFrequencyHz)) {
+            minimumFrequencyHz -= 1.0;
+            maximumFrequencyHz += 1.0;
+        }
+        config.segments = {{minimumFrequencyHz, maximumFrequencyHz, maximumFrequencyHz - minimumFrequencyHz}};
+    }
+    resetPscVisualization(config);
+    m_offlineReplayFrames = frames;
+    m_nextOfflineReplayFrame = 0;
+    m_pscFrameCount = 0;
+    m_offlineReplayActive = true;
+    m_pscSweepMessage = QStringLiteral("离线演示回放：%1").arg(QFileInfo(sourcePath).fileName());
+    if (m_startButton) {
+        m_startButton->setEnabled(false);
+    }
+    if (m_importButton) {
+        m_importButton->setEnabled(false);
+    }
+    if (m_stopButton) {
+        m_stopButton->setEnabled(true);
+    }
+    updateOfflineReplayStatus();
+    m_offlineReplayTimer->start();
+}
+
+void SweepPage::playNextOfflineFrame()
+{
+    if (!m_offlineReplayActive || m_nextOfflineReplayFrame >= m_offlineReplayFrames.size()) {
+        finishOfflineReplay(true);
+        return;
+    }
+
+    appendPscFrame(m_offlineReplayFrames.at(m_nextOfflineReplayFrame));
+    ++m_nextOfflineReplayFrame;
+    ++m_pscFrameCount;
+    if (m_nextOfflineReplayFrame >= m_offlineReplayFrames.size()) {
+        finishOfflineReplay(true);
+        return;
+    }
+    updateOfflineReplayStatus();
+}
+
+void SweepPage::stopOfflineReplay()
+{
+    finishOfflineReplay(false);
+}
+
+void SweepPage::finishOfflineReplay(bool completed)
+{
+    if (!m_offlineReplayActive) {
+        return;
+    }
+    m_offlineReplayTimer->stop();
+    m_offlineReplayActive = false;
+    m_offlineReplayFrames.clear();
+    if (m_startButton) {
+        m_startButton->setEnabled(true);
+    }
+    if (m_importButton) {
+        m_importButton->setEnabled(true);
+    }
+    if (m_stopButton) {
+        m_stopButton->setEnabled(false);
+    }
+    if (m_statusLabel) {
+        m_statusLabel->setText(completed
+            ? QStringLiteral("离线演示回放已完成：%1 帧").arg(m_pscFrameCount)
+            : QStringLiteral("离线演示回放已停止：%1/%2 帧")
+                  .arg(m_pscFrameCount)
+                  .arg(m_nextOfflineReplayFrame));
+    }
+}
+
+void SweepPage::updateOfflineReplayStatus() const
+{
+    if (!m_statusLabel) {
+        return;
+    }
+    m_statusLabel->setText(QStringLiteral("%1\n离线演示回放：%2/%3 帧")
+                               .arg(m_pscSweepMessage)
+                               .arg(m_pscFrameCount)
+                               .arg(m_offlineReplayFrames.size()));
 }
 
 void SweepPage::startPscSweepAsync(const CeyearPscSweepConfig &config)
@@ -391,6 +563,9 @@ void SweepPage::startPscSweepAsync(const CeyearPscSweepConfig &config)
     connect(thread, &QThread::finished, this, [this, thread]() {
         if (m_pscCommandThread == thread) {
             m_pscCommandThread = nullptr;
+            if (m_pendingConfirmedFrequencyHz.has_value() && m_pscSweepActive) {
+                stopSweep();
+            }
         }
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
@@ -479,6 +654,23 @@ void SweepPage::finalizePscSweepStart(const CeyearCaptureResult &result)
 
 void SweepPage::finalizePscSweepStop(const CeyearCaptureResult &result)
 {
+    if (!result.success) {
+        m_pendingConfirmedFrequencyHz.reset();
+        if (m_startButton) {
+            m_startButton->setEnabled(false);
+        }
+        if (m_stopButton) {
+            m_stopButton->setEnabled(true);
+        }
+        if (m_confirmButton) {
+            m_confirmButton->setEnabled(true);
+        }
+        if (m_statusLabel) {
+            m_statusLabel->setText(pscSweepStatusText(result, QStringLiteral("PSC sweep stop failed")));
+        }
+        return;
+    }
+
     m_pscSweepActive = false;
     if (m_autoSaveTimer) {
         m_autoSaveTimer->stop();
@@ -489,8 +681,16 @@ void SweepPage::finalizePscSweepStop(const CeyearCaptureResult &result)
     if (m_stopButton) {
         m_stopButton->setEnabled(false);
     }
+    if (m_confirmButton) {
+        m_confirmButton->setEnabled(true);
+    }
     if (m_statusLabel) {
         m_statusLabel->setText(pscSweepStatusText(result, QStringLiteral("PSC sweep stopped")));
+    }
+    const std::optional<double> confirmedFrequencyHz = m_pendingConfirmedFrequencyHz;
+    m_pendingConfirmedFrequencyHz.reset();
+    if (confirmedFrequencyHz.has_value()) {
+        emit frequencyConfirmed(*confirmedFrequencyHz);
     }
 }
 
@@ -625,9 +825,25 @@ void SweepPage::confirmSelectedCandidate()
 
     bool ok = false;
     const double frequencyHz = frequencyItem->text().toDouble(&ok);
-    if (ok) {
-        emit frequencyConfirmed(frequencyHz);
+    if (!ok) {
+        return;
     }
+    if (!m_pscSweepActive) {
+        emit frequencyConfirmed(frequencyHz);
+        return;
+    }
+
+    m_pendingConfirmedFrequencyHz = frequencyHz;
+    if (m_confirmButton) {
+        m_confirmButton->setEnabled(false);
+    }
+    if (m_pscCommandThread) {
+        if (m_statusLabel) {
+            m_statusLabel->setText(QStringLiteral("Waiting for PSC sweep command before stopping..."));
+        }
+        return;
+    }
+    stopSweep();
 }
 
 void SweepPage::saveSweepData()
@@ -675,7 +891,6 @@ void SweepPage::autoSaveSweepData()
     QString statusMessage = m_pscSweepMessage;
     QPointer<QLabel> statusLabel(m_statusLabel);
     int saveCounter = m_autoSaveCounter;
-
     QThread *saveThread = QThread::create([framesToSave, filePath, statusMessage, statusLabel, saveCounter, frameCount]() {
         QString error;
         const bool success = saveCeyearPscFramesCsv(filePath, framesToSave, &error);

@@ -28,6 +28,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QtGlobal>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -156,8 +157,13 @@ bool readNpyHeader(const QString &path, NpyHeader *header, QString *error)
         return false;
     }
     QVector<qint64> shape;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QStringList dimensions = shapeMatch.captured(1).split(
+        QChar(','), Qt::SkipEmptyParts);
+#else
     const QStringList dimensions = shapeMatch.captured(1).split(
         QChar(','), QString::SkipEmptyParts);
+#endif
     for (const QString &dimension : dimensions) {
         bool ok = false;
         const qint64 value = dimension.trimmed().toLongLong(&ok);
