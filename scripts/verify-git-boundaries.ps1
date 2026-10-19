@@ -75,12 +75,39 @@ function Assert-GitAttribute {
     }
 }
 
-function Assert-NoLfsFilter {
+function Get-GitAttributes {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $filterValue = Get-GitAttributeValue -Path $Path -Attribute 'filter'
+    $attributeOutput = @(& git -C $repoRoot check-attr --all -- $Path 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to read Git attributes for '$Path' (git check-attr --all exit code $LASTEXITCODE): $attributeOutput"
+    }
+
+    $attributes = @{}
+    foreach ($attributeLine in $attributeOutput) {
+        $parts = $attributeLine.ToString() -split ': ', 3
+        if ($parts.Count -ne 3 -or $parts[0] -ne $Path) {
+            throw "Unexpected git check-attr --all output for '$Path': $attributeLine"
+        }
+
+        $attributes[$parts[1]] = $parts[2]
+    }
+
+    return ,$attributes
+}
+
+function Assert-BinaryAssetAttributes {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $attributes = Get-GitAttributes -Path $Path
+    $binaryValue = if ($attributes.ContainsKey('binary')) { $attributes['binary'] } else { '<unspecified>' }
+    if ($binaryValue -ne 'set') {
+        throw "Expected Git attribute 'binary' for '$Path' to be 'set', but found '$binaryValue'."
+    }
+
+    $filterValue = if ($attributes.ContainsKey('filter')) { $attributes['filter'] } else { '<unspecified>' }
     if ($filterValue -eq 'lfs') {
-        throw "Expected '$Path' not to use filter=lfs, but Git attributes set filter=lfs."
+        throw "Expected '$Path' not to use filter=lfs, but found filter='$filterValue'."
     }
 }
 
@@ -121,7 +148,23 @@ foreach ($path in $reviewablePaths) {
 
 Assert-GitAttribute -Path 'scripts/verify-git-boundaries.ps1' -Attribute 'text' -ExpectedValue 'set'
 Assert-GitAttribute -Path 'scripts/verify-git-boundaries.ps1' -Attribute 'eol' -ExpectedValue 'crlf'
-Assert-GitAttribute -Path 'scratch/sample.cap' -Attribute 'binary' -ExpectedValue 'set'
-Assert-NoLfsFilter -Path 'scratch/sample.cap'
+
+$binaryAssetPaths = @(
+    'scratch/sample.png',
+    'scratch/sample.jpg',
+    'scratch/sample.jpeg',
+    'scratch/manual.pdf',
+    'scratch/sample.cap',
+    'scratch/sample.iqraw',
+    'scratch/sample.npy',
+    'scratch/model.pth',
+    'scratch/model.pt',
+    'scratch/package.zip',
+    'scratch/archive.rar'
+)
+
+foreach ($path in $binaryAssetPaths) {
+    Assert-BinaryAssetAttributes -Path $path
+}
 
 Write-Output 'Git boundary verification passed.'
