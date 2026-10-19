@@ -158,6 +158,10 @@ SignalCleaningPage::SignalCleaningPage(QWidget *parent)
             this, &SignalCleaningPage::showResult);
     connect(m_processRunner, &SignalCleaningProcessRunner::cancelled, this, [this]() {
         setBusy(false);
+        m_runStateLabel->setText(QStringLiteral("已取消"));
+        m_runStateLabel->setProperty("state", "warning");
+        m_runStateLabel->style()->unpolish(m_runStateLabel);
+        m_runStateLabel->style()->polish(m_runStateLabel);
         setPageMessage(QStringLiteral("清洗已停止，已保留已经生成的结果。"), QStringLiteral("warning"));
         emit workflowStateChanged();
     });
@@ -172,8 +176,7 @@ SignalCleaningPage::~SignalCleaningPage()
 
 bool SignalCleaningPage::hasResults() const
 {
-    return !m_latestResult.predictions.isEmpty()
-        || QFileInfo::exists(m_latestResult.outputCsv);
+    return m_latestResult.success && !m_latestResult.cancelled;
 }
 
 bool SignalCleaningPage::isRunning() const
