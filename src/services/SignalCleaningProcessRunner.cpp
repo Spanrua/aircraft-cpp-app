@@ -218,10 +218,9 @@ bool SignalCleaningProcessRunner::start(
     m_process->setProcessEnvironment(environment);
     m_process->start();
     if (!m_process->waitForStarted(3000)) {
-        const QString error = QStringLiteral("无法启动信号清洗 Python 进程：%1").arg(m_process->errorString());
-        m_process->deleteLater();
-        m_process = nullptr;
-        emit failed(error);
+        m_lastError = QStringLiteral("无法启动信号清洗 Python 进程：%1")
+                          .arg(m_process->errorString());
+        finishResult(-1, QProcess::CrashExit);
         return false;
     }
 
@@ -390,7 +389,6 @@ void SignalCleaningProcessRunner::handleProcessError(QProcess::ProcessError erro
 {
     if (error == QProcess::FailedToStart) {
         m_lastError = m_process ? m_process->errorString() : QStringLiteral("信号清洗进程启动失败");
-        finishResult(-1, QProcess::CrashExit);
     }
 }
 
