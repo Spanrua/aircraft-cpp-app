@@ -1,4 +1,4 @@
-build-*/
+/build-*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
@@ -23,13 +23,24 @@ build.ninja
 __pycache__/
 *.py[cod]
 
-ui-test*.txt
-*.log
+/ui-test*.txt
+/*.log
 
-captures/
-data/
-state/
+/captures/
+/data/
+/state/
+/dist/
+/backups/
+/fullflow-*/
+/dji_training_backend_v5.zip
+/$out
 *.cap
+*.iqraw
 *.npy
+*.pth
+*.pt
+!tests/fixtures/**/*.cap
+!tests/fixtures/**/*.iqraw
+!tests/fixtures/**/*.npy
 .worktrees/
 .superpowers/
