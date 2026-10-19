@@ -36,7 +36,7 @@ Ordinary code changes must not create, move, or delete assets. Any asset migrati
 
 1. Start by reviewing `git status`.
 2. Stage files explicitly; do not use `git add -A`.
-3. Run the repository verifier before committing.
+3. Run `pwsh -NoProfile -File .\scripts\verify-git-boundaries.ps1` when modifying ignore rules or release behavior.
 4. Run offline tests when the change affects CMake, runtime behavior, or release workflows.
 5. Work on a `codex/<topic>` branch.
 
