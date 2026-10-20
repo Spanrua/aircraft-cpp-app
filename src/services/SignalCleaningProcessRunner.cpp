@@ -13,6 +13,8 @@
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QtGlobal>
+
+#include <cmath>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QStringConverter>
 #endif
@@ -322,16 +324,47 @@ void SignalCleaningProcessRunner::consumeLine(const QByteArray &line)
 bool SignalCleaningProcessRunner::loadResultFiles(QString *error)
 {
     QFile summaryFile(m_result.summaryPath);
-    if (summaryFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QJsonParseError parseError;
-        const QJsonDocument document = QJsonDocument::fromJson(summaryFile.readAll(), &parseError);
-        if (document.isObject()) {
-            const QJsonObject summary = document.object();
-            m_result.threshold = summary.value(QStringLiteral("threshold")).toDouble(m_result.threshold);
-            m_result.totalRecords = summary.value(QStringLiteral("records")).toInt();
-            m_result.device = summary.value(QStringLiteral("device")).toString();
+    if (!summaryFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error) {
+            *error = QStringLiteral("预测结果摘要不存在或无法读取：%1").arg(m_result.summaryPath);
         }
+        return false;
     }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(summaryFile.readAll(), &parseError);
+    if (!document.isObject()) {
+        if (error) {
+            *error = QStringLiteral("预测结果摘要格式无效：%1").arg(m_result.summaryPath);
+        }
+        return false;
+    }
+    const QJsonObject summary = document.object();
+    const QJsonValue recordsValue = summary.value(QStringLiteral("records"));
+    if (!recordsValue.isDouble()) {
+        if (error) {
+            *error = QStringLiteral("预测结果摘要缺少有效 records 字段。");
+        }
+        return false;
+    }
+    const double summaryRecords = recordsValue.toDouble();
+    if (!std::isfinite(summaryRecords) || summaryRecords < 1.0
+        || std::floor(summaryRecords) != summaryRecords) {
+        if (error) {
+            *error = QStringLiteral("预测结果摘要 records 必须是正整数。");
+        }
+        return false;
+    }
+    const QJsonValue thresholdValue = summary.value(QStringLiteral("threshold"));
+    if (!thresholdValue.isDouble() || !std::isfinite(thresholdValue.toDouble())
+        || thresholdValue.toDouble() < 0.0 || thresholdValue.toDouble() > 1.0) {
+        if (error) {
+            *error = QStringLiteral("预测结果摘要 threshold 必须在 0 到 1 之间。");
+        }
+        return false;
+    }
+    m_result.threshold = thresholdValue.toDouble();
+    m_result.totalRecords = static_cast<int>(summaryRecords);
+    m_result.device = summary.value(QStringLiteral("device")).toString();
 
     QFile csvFile(m_result.outputCsv);
     if (!csvFile.exists() || !csvFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -349,9 +382,37 @@ bool SignalCleaningProcessRunner::loadResultFiles(QString *error)
 #endif
     const QString header = stream.readLine();
     const QStringList columns = parseCsvLine(header);
+    const QStringList requiredColumns = {
+        QStringLiteral("path"),
+        QStringLiteral("index"),
+        QStringLiteral("sample_id"),
+        QStringLiteral("group"),
+        QStringLiteral("prob_signal"),
+        QStringLiteral("prediction"),
+    };
+    if (columns.size() != requiredColumns.size()) {
+        if (error) {
+            *error = QStringLiteral("预测结果 CSV 表头无效：%1").arg(m_result.outputCsv);
+        }
+        return false;
+    }
     QHash<QString, int> columnIndex;
     for (int index = 0; index < columns.size(); ++index) {
+        if (!requiredColumns.contains(columns.at(index)) || columnIndex.contains(columns.at(index))) {
+            if (error) {
+                *error = QStringLiteral("预测结果 CSV 表头无效：%1").arg(m_result.outputCsv);
+            }
+            return false;
+        }
         columnIndex.insert(columns.at(index), index);
+    }
+    for (const QString &column : requiredColumns) {
+        if (!columnIndex.contains(column)) {
+            if (error) {
+                *error = QStringLiteral("预测结果 CSV 缺少列 %1。").arg(column);
+            }
+            return false;
+        }
     }
     while (!stream.atEnd()) {
         const QString line = stream.readLine();
@@ -359,13 +420,32 @@ bool SignalCleaningProcessRunner::loadResultFiles(QString *error)
             continue;
         }
         const QStringList fields = parseCsvLine(line);
+        if (fields.size() != requiredColumns.size()) {
+            if (error) {
+                *error = QStringLiteral("预测结果 CSV 行字段数无效。");
+            }
+            return false;
+        }
         SignalCleaningPrediction prediction;
         prediction.path = csvField(fields, columnIndex.value(QStringLiteral("path"), -1));
-        prediction.index = csvField(fields, columnIndex.value(QStringLiteral("index"), -1)).toInt();
+        bool indexOk = false;
+        prediction.index = csvField(fields, columnIndex.value(QStringLiteral("index"), -1)).toInt(&indexOk);
         prediction.sampleId = csvField(fields, columnIndex.value(QStringLiteral("sample_id"), -1));
         prediction.group = csvField(fields, columnIndex.value(QStringLiteral("group"), -1));
-        prediction.probability = csvField(fields, columnIndex.value(QStringLiteral("prob_signal"), -1)).toDouble();
+        bool probabilityOk = false;
+        prediction.probability = csvField(fields, columnIndex.value(QStringLiteral("prob_signal"), -1))
+                                     .toDouble(&probabilityOk);
         prediction.label = csvField(fields, columnIndex.value(QStringLiteral("prediction"), -1));
+        if (prediction.path.trimmed().isEmpty() || !indexOk || prediction.index < 0
+            || prediction.sampleId.trimmed().isEmpty() || prediction.group.trimmed().isEmpty()
+            || !probabilityOk || !std::isfinite(prediction.probability)
+            || prediction.probability < 0.0 || prediction.probability > 1.0
+            || (prediction.label != QStringLiteral("signal") && prediction.label != QStringLiteral("noise"))) {
+            if (error) {
+                *error = QStringLiteral("预测结果 CSV 包含无效窗口记录。");
+            }
+            return false;
+        }
         m_result.predictions.append(prediction);
         if (prediction.label == QStringLiteral("signal")) {
             ++m_result.signalRecords;
@@ -373,8 +453,17 @@ bool SignalCleaningProcessRunner::loadResultFiles(QString *error)
             ++m_result.noiseRecords;
         }
     }
-    if (m_result.totalRecords <= 0) {
-        m_result.totalRecords = m_result.predictions.size();
+    if (m_result.predictions.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("预测结果 CSV 不包含任何窗口记录。");
+        }
+        return false;
+    }
+    if (m_result.totalRecords != m_result.predictions.size()) {
+        if (error) {
+            *error = QStringLiteral("预测结果摘要与 CSV 窗口数量不一致。");
+        }
+        return false;
     }
     return true;
 }
