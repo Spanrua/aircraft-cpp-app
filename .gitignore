@@ -44,3 +44,21 @@ __pycache__/
 !tests/fixtures/**/*.npy
 .worktrees/
 .superpowers/
+
+# Local troubleshooting launchers and status notes; use start_aircraft_qt.cmd
+# and scripts/package-fullflow-release.ps1 as the supported entry points.
+/build_and_run_no_waterfall.bat
+/build_sweep_fix.bat
+/build_with_vs2022.bat
+/rebuild.bat
+/rebuild_sweep_fix.bat
+/run_aircraft_qt_qt6.bat
+/run_aircraft_qt_release.bat
+/run_with_diagnostics.bat
+/start_simple.bat
+/AUTO_SAVE_README.md
+/PERFORMANCE_FIX_README.md
+/SWEEP_FIX_README.md
+/SWEEP_OPTIMIZATION_SUMMARY.md
+/WATERFALL_DISABLE_README.md
+/handoff.md
