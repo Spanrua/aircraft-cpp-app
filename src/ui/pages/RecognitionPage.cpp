@@ -23,6 +23,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QShowEvent>
@@ -76,24 +77,32 @@ RecognitionDisplay displayForRecognition(const RecognitionResult &result)
     {
         const char *token;
         const char *protocolType;
-        const char *individual;
+        const char *modelName;
     };
     static const ProtocolMapping mappings[] = {
-        {"air2s", "O3", "Air2s"},
         {"mini3pro", "O3", "Mini3 Pro"},
+        {"mini4pro", "O4", "Mini4 Pro"},
+        {"mini5pro", "O4+", "Mini5 Pro"},
+        {"yu4pro", "O4+", "Yu4Pro"},
         {"air3s", "O4", "Air3s"},
         {"air3", "O4", "Air3"},
-        {"mini4pro", "O4", "Mini4 Pro"},
-        {"yu4pro", "O4+", "Yu4Pro"},
-        {"mini5pro", "O4+", "Mini5 Pro"},
+        {"air2s", "O3", "Air2s"},
+        {"air2", "O3", "Air2"},
     };
 
     const QStringList candidates = {result.predictedIndividual, result.predictedType};
     for (const QString &candidate : candidates) {
         const QString normalized = normalizedRecognitionLabel(candidate);
         for (const ProtocolMapping &mapping : mappings) {
-            if (normalized.contains(QLatin1String(mapping.token))) {
-                return {QLatin1String(mapping.protocolType), QLatin1String(mapping.individual)};
+            const QString token = QLatin1String(mapping.token);
+            const int tokenIndex = normalized.indexOf(token);
+            if (tokenIndex >= 0) {
+                const QString suffix = normalized.mid(tokenIndex + token.size());
+                QString individual = QLatin1String(mapping.modelName);
+                if (suffix == QStringLiteral("01") || suffix == QStringLiteral("02")) {
+                    individual += QStringLiteral("_") + suffix;
+                }
+                return {QLatin1String(mapping.protocolType), individual};
             }
         }
     }
@@ -360,54 +369,95 @@ RecognitionPage::RecognitionPage(QWidget *parent)
     modelLayout->addRow(QStringLiteral("模型信息"), m_modelSummary);
     contentLayout()->addWidget(modelPanel);
 
-    auto *samplePanel = new QFrame(this);
-    samplePanel->setObjectName(QStringLiteral("RecognitionSamplePanel"));
-    auto *sampleLayout = new QFormLayout(samplePanel);
-    sampleLayout->setContentsMargins(14, 12, 14, 12);
-    sampleLayout->setSpacing(8);
-    m_sampleCombo = new QComboBox(samplePanel);
+    auto *singleSamplePanel = new QFrame(this);
+    singleSamplePanel->setObjectName(QStringLiteral("RecognitionSingleSamplePanel"));
+    auto *singleSampleLayout = new QFormLayout(singleSamplePanel);
+    singleSampleLayout->setContentsMargins(14, 12, 14, 12);
+    singleSampleLayout->setSpacing(8);
+    auto *singleSampleTitle = new QLabel(QStringLiteral("单文件识别"), singleSamplePanel);
+    singleSampleTitle->setProperty("sectionTitle", true);
+    singleSampleLayout->addRow(singleSampleTitle);
+    auto *singleSampleHint = new QLabel(QStringLiteral("从已登记样本中选择，或浏览一个 NPZ 文件；“识别当前文件”只处理下方显示的这一份文件。"), singleSamplePanel);
+    singleSampleHint->setWordWrap(true);
+    singleSampleHint->setProperty("muted", true);
+    singleSampleLayout->addRow(singleSampleHint);
+    m_sampleFilterEdit = new QLineEdit(singleSamplePanel);
+    m_sampleFilterEdit->setObjectName(QStringLiteral("RecognitionSampleFilterEdit"));
+    m_sampleFilterEdit->setClearButtonEnabled(true);
+    m_sampleFilterEdit->setPlaceholderText(QStringLiteral("按个体、样本编号或文件名筛选，例如 air3s_02"));
+    m_sampleFilterEdit->setToolTip(QStringLiteral("筛选仅影响已登记样本列表，不会改变当前外部文件。"));
+    singleSampleLayout->addRow(QStringLiteral("筛选已登记样本"), m_sampleFilterEdit);
+    m_sampleCombo = new QComboBox(singleSamplePanel);
     m_sampleCombo->setObjectName(QStringLiteral("RecognitionSampleCombo"));
-    sampleLayout->addRow(QStringLiteral("数据集样本"), m_sampleCombo);
+    m_sampleCombo->setToolTip(QStringLiteral("列表仅显示个体标签和文件名；完整路径显示在下方。"));
+    singleSampleLayout->addRow(QStringLiteral("已登记样本"), m_sampleCombo);
     auto *samplePathRow = new QHBoxLayout();
-    m_samplePathEdit = new QLineEdit(samplePanel);
+    m_samplePathEdit = new QLineEdit(singleSamplePanel);
     m_samplePathEdit->setObjectName(QStringLiteral("RecognitionSamplePathEdit"));
     m_samplePathEdit->setReadOnly(true);
-    m_chooseSampleButton = new QPushButton(QStringLiteral("选择 NPZ"), samplePanel);
+    m_chooseSampleButton = new QPushButton(QStringLiteral("选择单文件"), singleSamplePanel);
     m_chooseSampleButton->setObjectName(QStringLiteral("RecognitionChooseSampleButton"));
     m_chooseSampleButton->setProperty("secondary", true);
     samplePathRow->addWidget(m_samplePathEdit, 1);
     samplePathRow->addWidget(m_chooseSampleButton);
-    sampleLayout->addRow(QStringLiteral("样本文件"), samplePathRow);
-    m_sampleSummary = new QLabel(QStringLiteral("请选择一个包含 iq 数组的 NPZ 样本。"), samplePanel);
+    singleSampleLayout->addRow(QStringLiteral("当前识别文件"), samplePathRow);
+    m_sampleSummary = new QLabel(QStringLiteral("请选择一个包含 iq 数组的 NPZ 样本。"), singleSamplePanel);
     m_sampleSummary->setObjectName(QStringLiteral("RecognitionSampleSummary"));
     m_sampleSummary->setWordWrap(true);
-    sampleLayout->addRow(QStringLiteral("样本信息"), m_sampleSummary);
+    singleSampleLayout->addRow(QStringLiteral("选择摘要"), m_sampleSummary);
+    m_runButton = new QPushButton(QStringLiteral("识别当前文件"), singleSamplePanel);
+    m_runButton->setObjectName(QStringLiteral("RecognitionRunButton"));
+    m_runButton->setProperty("primary", true);
+    singleSampleLayout->addRow(m_runButton);
+    contentLayout()->addWidget(singleSamplePanel);
+
+    auto *batchPanel = new QFrame(this);
+    batchPanel->setObjectName(QStringLiteral("RecognitionBatchPanel"));
+    auto *batchLayout = new QFormLayout(batchPanel);
+    batchLayout->setContentsMargins(14, 12, 14, 12);
+    batchLayout->setSpacing(8);
+    auto *batchTitle = new QLabel(QStringLiteral("批量文件识别"), batchPanel);
+    batchTitle->setProperty("sectionTitle", true);
+    batchLayout->addRow(batchTitle);
+    auto *batchHint = new QLabel(QStringLiteral("只识别此处明确选择的文件，不会混入已登记样本，也不会使用上方的当前识别文件。"), batchPanel);
+    batchHint->setWordWrap(true);
+    batchHint->setProperty("muted", true);
+    batchLayout->addRow(batchHint);
     auto *batchSampleRow = new QHBoxLayout();
-    m_batchSampleSummary = new QLabel(QStringLiteral("未选择额外批量样本；也可直接使用数据集已登记样本。"), samplePanel);
+    m_batchSampleSummary = new QLabel(QStringLiteral("未选择批量文件。"), batchPanel);
     m_batchSampleSummary->setObjectName(QStringLiteral("RecognitionBatchSampleSummary"));
     m_batchSampleSummary->setWordWrap(true);
-    m_chooseBatchSamplesButton = new QPushButton(QStringLiteral("选择批量文件"), samplePanel);
+    m_chooseBatchSamplesButton = new QPushButton(QStringLiteral("选择文件"), batchPanel);
     m_chooseBatchSamplesButton->setObjectName(QStringLiteral("RecognitionChooseBatchSamplesButton"));
     m_chooseBatchSamplesButton->setProperty("secondary", true);
-    m_chooseBatchDirectoryButton = new QPushButton(QStringLiteral("选择文件夹"), samplePanel);
+    m_chooseBatchDirectoryButton = new QPushButton(QStringLiteral("选择文件夹"), batchPanel);
     m_chooseBatchDirectoryButton->setObjectName(QStringLiteral("RecognitionChooseBatchDirectoryButton"));
     m_chooseBatchDirectoryButton->setProperty("secondary", true);
-    batchSampleRow->addWidget(m_batchSampleSummary, 1);
     batchSampleRow->addWidget(m_chooseBatchSamplesButton);
     batchSampleRow->addWidget(m_chooseBatchDirectoryButton);
-    sampleLayout->addRow(QStringLiteral("批量样本"), batchSampleRow);
-    contentLayout()->addWidget(samplePanel);
+    m_clearBatchSamplesButton = new QPushButton(QStringLiteral("清空列表"), batchPanel);
+    m_clearBatchSamplesButton->setObjectName(QStringLiteral("RecognitionClearBatchSamplesButton"));
+    m_clearBatchSamplesButton->setProperty("secondary", true);
+    batchSampleRow->addWidget(m_clearBatchSamplesButton);
+    batchLayout->addRow(QStringLiteral("选择文件"), batchSampleRow);
+    batchLayout->addRow(QStringLiteral("本次范围"), m_batchSampleSummary);
+    m_batchSampleList = new QPlainTextEdit(batchPanel);
+    m_batchSampleList->setObjectName(QStringLiteral("RecognitionBatchSampleList"));
+    m_batchSampleList->setReadOnly(true);
+    m_batchSampleList->setPlaceholderText(QStringLiteral("选择后将在此列出本次批量识别的文件。"));
+    m_batchSampleList->setMaximumBlockCount(1000);
+    m_batchSampleList->setFixedHeight(86);
+    batchLayout->addRow(QStringLiteral("文件清单"), m_batchSampleList);
+    m_batchRunButton = new QPushButton(QStringLiteral("先选择批量文件"), batchPanel);
+    m_batchRunButton->setObjectName(QStringLiteral("RecognitionRunAllSamplesButton"));
+    m_batchRunButton->setProperty("primary", true);
+    batchLayout->addRow(m_batchRunButton);
+    contentLayout()->addWidget(batchPanel);
 
     auto *actions = new QHBoxLayout();
     m_refreshButton = new QPushButton(QStringLiteral("刷新模型和样本"), this);
     m_refreshButton->setObjectName(QStringLiteral("RecognitionRefreshButton"));
     m_refreshButton->setProperty("secondary", true);
-    m_runButton = new QPushButton(QStringLiteral("执行识别"), this);
-    m_runButton->setObjectName(QStringLiteral("RecognitionRunButton"));
-    m_runButton->setProperty("primary", true);
-    m_batchRunButton = new QPushButton(QStringLiteral("执行批量识别"), this);
-    m_batchRunButton->setObjectName(QStringLiteral("RecognitionRunAllSamplesButton"));
-    m_batchRunButton->setProperty("secondary", true);
     m_cancelButton = new QPushButton(QStringLiteral("取消识别"), this);
     m_cancelButton->setObjectName(QStringLiteral("RecognitionCancelButton"));
     m_cancelButton->setProperty("secondary", true);
@@ -421,8 +471,6 @@ RecognitionPage::RecognitionPage(QWidget *parent)
     m_exportResultsButton->setProperty("secondary", true);
     m_exportResultsButton->setEnabled(false);
     actions->addWidget(m_refreshButton);
-    actions->addWidget(m_runButton);
-    actions->addWidget(m_batchRunButton);
     actions->addWidget(m_retryFailedButton);
     actions->addWidget(m_exportResultsButton);
     actions->addWidget(m_cancelButton);
@@ -481,6 +529,8 @@ RecognitionPage::RecognitionPage(QWidget *parent)
             this, [this]() { selectModelFromCombo(); });
     connect(m_sampleCombo, qOverload<int>(&QComboBox::currentIndexChanged),
             this, [this]() { selectSampleFromCombo(); });
+    connect(m_sampleFilterEdit, &QLineEdit::textChanged,
+            this, &RecognitionPage::populateSampleCombo);
     connect(m_modelCombo, qOverload<int>(&QComboBox::activated),
             this, [this]() { emit recognitionInputChanged(); });
     connect(m_sampleCombo, qOverload<int>(&QComboBox::activated),
@@ -489,6 +539,7 @@ RecognitionPage::RecognitionPage(QWidget *parent)
     connect(m_chooseSampleButton, &QPushButton::clicked, this, &RecognitionPage::chooseSample);
     connect(m_chooseBatchSamplesButton, &QPushButton::clicked, this, &RecognitionPage::chooseBatchSamples);
     connect(m_chooseBatchDirectoryButton, &QPushButton::clicked, this, &RecognitionPage::chooseBatchSampleDirectory);
+    connect(m_clearBatchSamplesButton, &QPushButton::clicked, this, &RecognitionPage::clearBatchSamples);
     connect(m_runButton, &QPushButton::clicked, this, &RecognitionPage::runRecognition);
     connect(m_batchRunButton, &QPushButton::clicked, this, &RecognitionPage::runAllDatasetSamples);
     connect(m_retryFailedButton, &QPushButton::clicked, this, &RecognitionPage::retryFailedBatchSamples);
@@ -675,25 +726,49 @@ void RecognitionPage::loadSamples()
     AppStateStore store;
     const auto state = store.load();
     m_samples = state.has_value() ? state->samples : QVector<SampleRecord>();
+    populateSampleCombo(m_sampleFilterEdit ? m_sampleFilterEdit->text() : QString());
+    updateRunAvailability();
+}
+
+void RecognitionPage::populateSampleCombo(const QString &filterText)
+{
+    if (!m_sampleCombo) {
+        return;
+    }
+    const QString selectedPath = m_samplePathEdit ? m_samplePathEdit->text().trimmed() : QString();
+    const QString filter = filterText.trimmed();
+    m_sampleCombo->blockSignals(true);
     m_sampleCombo->clear();
-    m_selectedSampleIndex = -1;
-    m_selectedSampleNpzIndex = 0;
+    int selectedComboIndex = -1;
     for (int index = 0; index < m_samples.size(); ++index) {
         const SampleRecord &sample = m_samples.at(index);
         if (sample.sampleFilePath.isEmpty() || !QFileInfo::exists(sample.sampleFilePath)) {
             continue;
         }
-        m_sampleCombo->addItem(QStringLiteral("%1 · %2")
-                                   .arg(sample.sampleId, sample.labelType.isEmpty()
-                                           ? QStringLiteral("未标注")
-                                           : sample.labelType),
-                               index);
+        const QString individual = sample.labelIndividual.isEmpty()
+            ? (sample.labelType.isEmpty() ? QStringLiteral("未标注") : sample.labelType)
+            : sample.labelIndividual;
+        const QString searchText = QStringLiteral("%1 %2 %3 %4")
+                                       .arg(sample.sampleId, sample.labelType, individual, sample.sampleFilePath);
+        if (!filter.isEmpty() && !searchText.contains(filter, Qt::CaseInsensitive)) {
+            continue;
+        }
+        const QString label = QStringLiteral("%1 · %2").arg(individual, shortPath(sample.sampleFilePath));
+        m_sampleCombo->addItem(label, index);
+        const int comboIndex = m_sampleCombo->count() - 1;
+        m_sampleCombo->setItemData(comboIndex, sample.sampleFilePath, Qt::ToolTipRole);
+        if (QFileInfo(sample.sampleFilePath).absoluteFilePath() == QFileInfo(selectedPath).absoluteFilePath()) {
+            selectedComboIndex = comboIndex;
+        }
     }
+    m_sampleCombo->setCurrentIndex(selectedComboIndex >= 0 ? selectedComboIndex : (m_sampleCombo->count() > 0 ? 0 : -1));
+    m_sampleCombo->blockSignals(false);
     if (m_sampleCombo->count() > 0) {
-        m_sampleCombo->setCurrentIndex(0);
         selectSampleFromCombo();
     } else {
-        m_sampleSummary->setText(QStringLiteral("暂无可用 NPZ 样本。请先在预处理页生成样本。"));
+        m_sampleSummary->setText(filter.isEmpty()
+                                     ? QStringLiteral("暂无可用 NPZ 样本。请先在预处理页生成样本。")
+                                     : QStringLiteral("没有匹配“%1”的已登记样本；可清除筛选或浏览外部 NPZ 文件。").arg(filter));
     }
     updateRunAvailability();
 }
@@ -737,12 +812,17 @@ void RecognitionPage::selectSampleFromCombo()
     }
     m_selectedSampleIndex = index;
     const SampleRecord &sample = m_samples.at(index);
-    m_selectedSampleNpzIndex = sample.sampleIndex;
+    // The recognition backend indexes the IQ windows stored inside this one
+    // NPZ file.  sampleIndex is a dataset-wide ordinal and may keep growing
+    // after the preprocessor starts a new chunk, while windowIndex restarts
+    // for every NPZ file.
+    m_selectedSampleNpzIndex = sample.windowIndex;
     m_samplePathEdit->setText(sample.sampleFilePath);
     m_samplePathEdit->setToolTip(sample.sampleFilePath);
-    m_sampleSummary->setText(QStringLiteral("样本：%1\n类别：%2\n中心频率：%3 MHz，带宽：%4 MHz")
-                                 .arg(sample.sampleId,
-                                      sample.labelType.isEmpty() ? QStringLiteral("未标注") : sample.labelType)
+    m_sampleSummary->setText(QStringLiteral("样本编号：%1\n类别：%2 · 个体：%3\n中心频率：%4 MHz，带宽：%5 MHz")
+                                  .arg(sample.sampleId,
+                                       sample.labelType.isEmpty() ? QStringLiteral("未标注") : sample.labelType,
+                                       sample.labelIndividual.isEmpty() ? QStringLiteral("未标注") : sample.labelIndividual)
                                  .arg(sample.centerFrequencyHz / 1000000.0, 0, 'f', 3)
                                  .arg(sample.bandwidthHz / 1000000.0, 0, 'f', 3));
     updateProvenance();
@@ -758,7 +838,7 @@ void RecognitionPage::chooseSample()
         m_selectedSampleNpzIndex = 0;
         m_samplePathEdit->setText(path);
         m_samplePathEdit->setToolTip(path);
-        m_sampleSummary->setText(QStringLiteral("已选择外部样本：%1").arg(shortPath(path)));
+        m_sampleSummary->setText(QStringLiteral("外部样本：%1\n完整路径已显示在“当前识别文件”中。仅会识别这一份文件。").arg(shortPath(path)));
         updateProvenance();
         updateRunAvailability();
         emit recognitionInputChanged();
@@ -792,13 +872,8 @@ void RecognitionPage::chooseBatchSamples()
         return;
     }
 
-    m_externalBatchSamplePaths = selectedPaths;
-    m_batchSegmentDirectory.clear();
-    m_batchSampleSummary->setText(QStringLiteral("已选择 %1 个外部 NPZ 样本，将与数据集已登记样本合并并去重。")
-                                      .arg(m_externalBatchSamplePaths.size()));
+    setBatchSamplePaths(selectedPaths, QString());
     m_segmentSummary->setText(QStringLiteral("段级融合：未选择采集段文件夹；本次将按独立样本展示结果。"));
-    updateRunAvailability();
-    emit recognitionInputChanged();
 }
 
 void RecognitionPage::chooseBatchSampleDirectory()
@@ -841,12 +916,35 @@ void RecognitionPage::chooseBatchSampleDirectory()
         return;
     }
 
-    m_externalBatchSamplePaths = selectedPaths;
-    m_batchSegmentDirectory = directoryInfo.absoluteFilePath();
-    m_batchSampleSummary->setText(QStringLiteral("已从采集段文件夹收集 %1 个 NPZ 样本（含子文件夹）；本次只融合该文件夹内窗口，不混入数据集样本。")
-                                      .arg(m_externalBatchSamplePaths.size()));
+    setBatchSamplePaths(selectedPaths, directoryInfo.absoluteFilePath());
     m_segmentSummary->setText(QStringLiteral("已选择采集段：%1。完成后将显示综合结论、综合置信度和窗口一致性。")
                                   .arg(shortPath(m_batchSegmentDirectory)));
+}
+
+void RecognitionPage::clearBatchSamples()
+{
+    setBatchSamplePaths({}, QString());
+    m_segmentSummary->setText(QStringLiteral("段级融合：选择同一段采集信号切分出的文件夹后，将以全部窗口的类别概率生成一条综合结论。"));
+}
+
+void RecognitionPage::setBatchSamplePaths(const QStringList &samplePaths, const QString &segmentDirectory)
+{
+    QStringList acceptedPaths;
+    for (const QString &samplePath : samplePaths) {
+        const QFileInfo info(samplePath);
+        if (!info.isFile() || info.suffix().compare(QStringLiteral("npz"), Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+        const QString absolutePath = info.absoluteFilePath();
+        if (!acceptedPaths.contains(absolutePath)) {
+            acceptedPaths.append(absolutePath);
+        }
+    }
+    m_externalBatchSamplePaths = acceptedPaths;
+    const QFileInfo segmentInfo(segmentDirectory);
+    m_batchSegmentDirectory = !acceptedPaths.isEmpty() && segmentInfo.isDir()
+        ? segmentInfo.absoluteFilePath() : QString();
+    updateBatchSelectionSummary();
     updateRunAvailability();
     emit recognitionInputChanged();
 }
@@ -890,7 +988,7 @@ void RecognitionPage::runAllDatasetSamples()
 
     const QVector<RecognitionRequest> requests = availableBatchRequests();
     if (requests.isEmpty()) {
-        handleRecognitionFailed(QStringLiteral("没有可用于批量识别的 NPZ 样本。请先选择文件、文件夹，或在数据集页登记样本。"));
+        handleRecognitionFailed(QStringLiteral("没有可用于批量识别的 NPZ 文件。请在“批量文件识别”区域选择文件或文件夹。"));
         return;
     }
 
@@ -1200,7 +1298,7 @@ void RecognitionPage::handleRecognitionFinished(const RecognitionResult &result)
     m_modelMetric->setValue(QStringLiteral("已加载"));
     m_confidenceMetric->setValue(QStringLiteral("%1%").arg(result.confidence, 0, 'f', 2));
     const RecognitionDisplay display = displayForRecognition(result);
-    m_resultMetric->setValue(display.protocolType);
+    m_resultMetric->setValue(QStringLiteral("%1 · %2").arg(display.protocolType, display.individual));
     m_resultDetail->setText(QStringLiteral("样本：%1\n链路类型：%2\n识别个体：%3\n模型：%4")
                                 .arg(shortPath(result.samplePath),
                                      display.protocolType,
@@ -1237,11 +1335,13 @@ void RecognitionPage::setBusy(bool busy)
     m_chooseSampleButton->setEnabled(!busy);
     m_chooseBatchSamplesButton->setEnabled(!busy);
     m_chooseBatchDirectoryButton->setEnabled(!busy);
+    m_clearBatchSamplesButton->setEnabled(!busy && !m_externalBatchSamplePaths.isEmpty());
     m_batchRunButton->setEnabled(!busy && hasUsableModel() && !availableBatchRequests().isEmpty());
     m_retryFailedButton->setEnabled(!busy && !m_failedBatchRequests.isEmpty());
     m_exportResultsButton->setEnabled(!busy && m_resultTable && m_resultTable->rowCount() > 0);
     m_modelCombo->setEnabled(!busy);
     m_sampleCombo->setEnabled(!busy);
+    m_sampleFilterEdit->setEnabled(!busy);
 }
 
 QVector<RecognitionRequest> RecognitionPage::availableBatchRequests() const
@@ -1265,15 +1365,39 @@ QVector<RecognitionRequest> RecognitionPage::availableBatchRequests() const
         includedPaths.append(absolutePath);
     };
 
-    if (m_batchSegmentDirectory.isEmpty()) {
-        for (const SampleRecord &sample : m_samples) {
-            appendRequest(sample.sampleFilePath, sample.sampleIndex);
-        }
-    }
     for (const QString &samplePath : m_externalBatchSamplePaths) {
         appendRequest(samplePath, 0);
     }
     return requests;
+}
+
+void RecognitionPage::updateBatchSelectionSummary()
+{
+    const int count = m_externalBatchSamplePaths.size();
+    if (m_batchSampleSummary) {
+        if (count == 0) {
+            m_batchSampleSummary->setText(QStringLiteral("未选择批量文件。"));
+        } else if (m_batchSegmentDirectory.isEmpty()) {
+            m_batchSampleSummary->setText(QStringLiteral("本次将识别 %1 个文件（仅以下清单，不混入已登记样本）。").arg(count));
+        } else {
+            m_batchSampleSummary->setText(QStringLiteral("本次将识别 %1 个文件，并按所选采集段融合结果。").arg(count));
+        }
+    }
+    if (m_batchSampleList) {
+        QStringList lines;
+        for (int index = 0; index < m_externalBatchSamplePaths.size(); ++index) {
+            lines.append(QStringLiteral("%1. %2")
+                             .arg(index + 1)
+                             .arg(QDir::toNativeSeparators(m_externalBatchSamplePaths.at(index))));
+        }
+        m_batchSampleList->setPlainText(lines.join(QLatin1Char('\n')));
+        m_batchSampleList->setToolTip(lines.join(QLatin1Char('\n')));
+    }
+    if (m_batchRunButton) {
+        m_batchRunButton->setText(count > 0
+            ? QStringLiteral("识别这 %1 个文件").arg(count)
+            : QStringLiteral("先选择批量文件"));
+    }
 }
 
 void RecognitionPage::updateRunAvailability()

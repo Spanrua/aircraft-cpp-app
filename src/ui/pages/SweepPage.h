@@ -1,6 +1,7 @@
 #pragma once
 
 #include "services/CeyearPscSweep.h"
+#include "services/PscWidebandAlertDetector.h"
 #include "ui/pages/WorkflowPage.h"
 
 #include <memory>
@@ -56,6 +57,8 @@ private:
     void updatePscReceiveStatus();
     void appendPscFrame(const CeyearPscFrame &frame);
     void setCandidateRows(const QVector<CeyearPscCandidate> &candidates);
+    void showWidebandAlert(const PscWidebandAlert &alert);
+    void recordWidebandAlert(const PscWidebandAlert &alert);
     void confirmSelectedCandidate();
     void saveSweepData();
     void autoSaveSweepData();
@@ -64,6 +67,8 @@ private:
     std::unique_ptr<CeyearPscReceiver> m_pscReceiver;
     QThread *m_pscCommandThread = nullptr;
     CeyearPscCandidateExtractor m_candidateExtractor;
+    PscWidebandAlertDetector m_widebandAlertDetector;
+    QVector<PscWidebandAlert> m_widebandAlertHistory;
     QVector<CeyearPscFrame> m_pscFrames;
     QString m_pscSweepMessage;
     qint64 m_pscBytesReceived = 0;
@@ -80,6 +85,7 @@ private:
     QTableWidget *m_segmentTable = nullptr;
     QLineEdit *m_hitThresholdEdit = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_widebandAlertLabel = nullptr;
     QPushButton *m_startButton = nullptr;
     QPushButton *m_stopButton = nullptr;
     QPushButton *m_saveButton = nullptr;

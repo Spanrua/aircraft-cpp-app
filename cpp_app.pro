@@ -17,6 +17,7 @@ SOURCES += \
     src/services/CeyearIqReceiver.cpp \
     src/services/CeyearPscReceiver.cpp \
     src/services/CeyearPscSweep.cpp \
+    src/services/PscWidebandAlertDetector.cpp \
     src/services/CeyearVisaQuery.cpp \
     src/services/PreprocessProcessRunner.cpp \
     src/services/RecognitionProcessRunner.cpp \
@@ -50,6 +51,7 @@ HEADERS += \
     src/services/CeyearIqReceiver.h \
     src/services/CeyearPscReceiver.h \
     src/services/CeyearPscSweep.h \
+    src/services/PscWidebandAlertDetector.h \
     src/services/CeyearVisaQuery.h \
     src/services/CeyearVisaService.h \
     src/services/PreprocessProcessRunner.h \

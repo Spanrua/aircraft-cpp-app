@@ -315,6 +315,7 @@ bool PreprocessProcessRunner::start(
         : m_request.cancelPath;
     m_progressOffset = 0;
     m_stdoutBuffer.clear();
+    m_processOutput.clear();
     m_cancelRequested = false;
     m_timedOut = false;
 
@@ -408,7 +409,9 @@ void PreprocessProcessRunner::readProcessOutput()
     if (!m_process) {
         return;
     }
-    m_stdoutBuffer += m_process->readAll();
+    const QByteArray output = m_process->readAll();
+    m_processOutput += QString::fromUtf8(output);
+    m_stdoutBuffer += output;
     int newlineIndex = -1;
     while ((newlineIndex = m_stdoutBuffer.indexOf('\n')) >= 0) {
         const QByteArray line = m_stdoutBuffer.left(newlineIndex).trimmed();
@@ -591,8 +594,6 @@ void PreprocessProcessRunner::finishWithResult(const std::optional<PreprocessRun
 
 void PreprocessProcessRunner::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
-    Q_UNUSED(exitCode)
-    Q_UNUSED(exitStatus)
     readProcessOutput();
     readProgressFile();
     QString responseError;
@@ -600,6 +601,14 @@ void PreprocessProcessRunner::handleProcessFinished(int exitCode, QProcess::Exit
     if (result.has_value()) {
         finishWithResult(result, responseError);
         return;
+    }
+    const QString processOutput = m_processOutput.trimmed();
+    if (!processOutput.isEmpty()) {
+        responseError = QStringLiteral("Python IQRAW/CAP 预处理进程失败（退出码 %1）：%2")
+                            .arg(exitCode)
+                            .arg(processOutput);
+    } else if (exitStatus != QProcess::NormalExit) {
+        responseError = QStringLiteral("Python IQRAW/CAP 预处理进程异常结束");
     }
     finishWithResult(std::nullopt, responseError);
 }

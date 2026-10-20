@@ -217,6 +217,7 @@ private:
     QString m_progressReadPath;
     qint64 m_progressOffset = 0;
     QByteArray m_stdoutBuffer;
+    QString m_processOutput;
     bool m_cancelRequested = false;
     bool m_timedOut = false;
 };

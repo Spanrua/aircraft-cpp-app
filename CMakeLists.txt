@@ -185,6 +185,7 @@ set(AIRCRAFT_CORE_SOURCES
     src/services/CeyearIqReceiver.cpp
     src/services/CeyearPscReceiver.cpp
     src/services/CeyearPscSweep.cpp
+    src/services/PscWidebandAlertDetector.cpp
     src/services/CeyearVisaQuery.cpp
     src/services/PreprocessProcessRunner.cpp
     src/services/RecognitionProcessRunner.cpp

@@ -7,6 +7,8 @@
 #include "ui/widgets/WaterfallWidget.h"
 
 #include <QAbstractItemView>
+#include <QBrush>
+#include <QColor>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -27,6 +29,7 @@
 #include <QVBoxLayout>
 
 #include <exception>
+#include <algorithm>
 #include <limits>
 
 namespace
@@ -178,6 +181,7 @@ void SweepPage::buildUi()
     layout->setSpacing(12);
 
     auto *segmentGroup = new QGroupBox(QStringLiteral("扫频频段"), this);
+    segmentGroup->setMaximumWidth(360);
     auto *segmentLayout = new QVBoxLayout(segmentGroup);
     m_segmentTable = new QTableWidget(0, 3, segmentGroup);
     m_segmentTable->setObjectName(QStringLiteral("SweepSegmentTable"));
@@ -223,25 +227,41 @@ void SweepPage::buildUi()
     m_statusLabel->setObjectName(QStringLiteral("PscSweepStatusLabel"));
     m_statusLabel->setWordWrap(true);
     segmentLayout->addWidget(m_statusLabel);
-    layout->addWidget(segmentGroup, 0);
+    layout->addWidget(segmentGroup, 2);
 
     auto *waterfallGroup = new QGroupBox(QStringLiteral("PSC 时频图"), this);
     auto *waterfallLayout = new QVBoxLayout(waterfallGroup);
+    m_widebandAlertLabel = new QLabel(waterfallGroup);
+    m_widebandAlertLabel->setObjectName(QStringLiteral("PscWidebandAlertLabel"));
+    m_widebandAlertLabel->setWordWrap(true);
+    m_widebandAlertLabel->setStyleSheet(
+        QStringLiteral("QLabel#PscWidebandAlertLabel { color: #ffbe5c; background-color: rgba(110, 67, 16, 180); "
+                       "border: 1px solid #ffbe5c; border-radius: 4px; padding: 6px 8px; }"));
+    m_widebandAlertLabel->hide();
+    waterfallLayout->addWidget(m_widebandAlertLabel);
     m_waterfall = new WaterfallWidget(waterfallGroup);
     m_waterfall->setObjectName(QStringLiteral("PscWaterfallWidget"));
     waterfallLayout->addWidget(m_waterfall, 1);
-    layout->addWidget(waterfallGroup, 1);
+    layout->addWidget(waterfallGroup, 6);
 
     auto *candidateGroup = new QGroupBox(QStringLiteral("候选信号"), this);
+    candidateGroup->setMinimumWidth(410);
     auto *candidateLayout = new QVBoxLayout(candidateGroup);
-    m_candidateTable = new QTableWidget(0, 3, candidateGroup);
+    m_candidateTable = new QTableWidget(0, 5, candidateGroup);
     m_candidateTable->setObjectName(QStringLiteral("PscCandidateTable"));
     m_candidateTable->setHorizontalHeaderLabels({
         QStringLiteral("频率 Hz"),
         QStringLiteral("峰值 dBuV"),
-        QStringLiteral("命中"),
+        QStringLiteral("命中次数"),
+        QStringLiteral("带宽 MHz"),
+        QStringLiteral("状态"),
     });
-    m_candidateTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    auto *candidateHeader = m_candidateTable->horizontalHeader();
+    for (int column = 0; column < 4; ++column) {
+        candidateHeader->setSectionResizeMode(column, QHeaderView::Stretch);
+    }
+    candidateHeader->setSectionResizeMode(4, QHeaderView::Fixed);
+    m_candidateTable->setColumnWidth(4, 104);
     m_candidateTable->verticalHeader()->setVisible(false);
     m_candidateTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_candidateTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -251,7 +271,7 @@ void SweepPage::buildUi()
     m_confirmButton->setObjectName(QStringLiteral("ConfirmPscCandidateButton"));
     m_confirmButton->setProperty("primary", true);
     candidateLayout->addWidget(m_confirmButton);
-    layout->addWidget(candidateGroup, 0);
+    layout->addWidget(candidateGroup, 3);
 
     contentLayout()->addLayout(layout, 1);
     seedDefaultSegments();
@@ -448,11 +468,16 @@ void SweepPage::startOfflineReplay(const QVector<CeyearPscFrame> &frames, const 
         config.segments = {{minimumFrequencyHz, maximumFrequencyHz, maximumFrequencyHz - minimumFrequencyHz}};
     }
     resetPscVisualization(config);
+    const QVector<PscWidebandAlert> offlineAlerts = m_widebandAlertDetector.classifyOfflineSliceSequence(frames);
     m_offlineReplayFrames = frames;
     m_nextOfflineReplayFrame = 0;
     m_pscFrameCount = 0;
     m_offlineReplayActive = true;
     m_pscSweepMessage = QStringLiteral("离线演示回放：%1").arg(QFileInfo(sourcePath).fileName());
+    if (!offlineAlerts.isEmpty()) {
+        // Offline results are pre-ranked by persistence, then peak level.
+        showWidebandAlert(offlineAlerts.first());
+    }
     if (m_startButton) {
         m_startButton->setEnabled(false);
     }
@@ -739,9 +764,16 @@ void SweepPage::resetPscVisualization(const CeyearPscSweepConfig &config)
             m_waterfall->setFrequencyRange(0.0, 0.0);
         }
         m_waterfall->clearFrames();
+        m_waterfall->clearAlertBand();
     }
 
     m_candidateExtractor = CeyearPscCandidateExtractor(config.hitThresholdDbuv);
+    m_widebandAlertDetector = PscWidebandAlertDetector(config.hitThresholdDbuv);
+    m_widebandAlertHistory.clear();
+    if (m_widebandAlertLabel) {
+        m_widebandAlertLabel->clear();
+        m_widebandAlertLabel->hide();
+    }
     m_pscFrames.clear();
     if (m_saveButton) {
         m_saveButton->setEnabled(false);
@@ -788,6 +820,18 @@ void SweepPage::appendPscFrame(const CeyearPscFrame &frame)
     }
 
     m_candidateExtractor.update(frame);
+    const QVector<PscWidebandAlert> alerts = m_offlineReplayActive
+        ? QVector<PscWidebandAlert>()
+        : m_widebandAlertDetector.update(frame);
+    if (!alerts.isEmpty()) {
+        const auto strongestAlert = std::max_element(alerts.cbegin(), alerts.cend(),
+                                                     [](const PscWidebandAlert &left, const PscWidebandAlert &right) {
+                                                         return left.peakLevelDbuv < right.peakLevelDbuv;
+                                                     });
+        showWidebandAlert(*strongestAlert);
+        setCandidateRows(m_candidateExtractor.getCandidates());
+        return;
+    }
 
     // 限制候选表刷新频率，时频图仍然保持实时有界缓存。
     static int frameCounter = 0;
@@ -803,13 +847,68 @@ void SweepPage::setCandidateRows(const QVector<CeyearPscCandidate> &candidates)
     if (!m_candidateTable) {
         return;
     }
-    m_candidateTable->setRowCount(candidates.size());
+    m_candidateTable->setRowCount(candidates.size() + m_widebandAlertHistory.size());
     for (int row = 0; row < candidates.size(); ++row) {
         const CeyearPscCandidate &candidate = candidates.at(row);
         m_candidateTable->setItem(row, 0, centeredItem(QString::number(candidate.frequencyHz, 'f', 0)));
         m_candidateTable->setItem(row, 1, centeredItem(QString::number(candidate.peakLevelDbuv, 'f', 1)));
         m_candidateTable->setItem(row, 2, centeredItem(QString::number(candidate.hitCount)));
+        m_candidateTable->setItem(row, 3, centeredItem(QStringLiteral("--")));
+        m_candidateTable->setItem(row, 4, centeredItem(QStringLiteral("候选")));
     }
+
+    for (int index = 0; index < m_widebandAlertHistory.size(); ++index) {
+        const int row = candidates.size() + index;
+        const PscWidebandAlert &alert = m_widebandAlertHistory.at(index);
+        m_candidateTable->setItem(row, 0, centeredItem(QString::number(alert.centerHz, 'f', 0)));
+        m_candidateTable->setItem(row, 1, centeredItem(QString::number(alert.peakLevelDbuv, 'f', 1)));
+        m_candidateTable->setItem(row, 2, centeredItem(QString::number(alert.consecutiveFrameCount)));
+        m_candidateTable->setItem(row, 3, centeredItem(QString::number(alert.bandwidthHz / 1000000.0, 'f', 1)));
+        m_candidateTable->setItem(row, 4, centeredItem(
+            QStringLiteral("告警·%1").arg(alert.bandwidthClass)));
+
+        for (int column = 0; column < m_candidateTable->columnCount(); ++column) {
+            QTableWidgetItem *item = m_candidateTable->item(row, column);
+            item->setForeground(QBrush(QColor(255, 190, 92)));
+            item->setBackground(QBrush(QColor(110, 67, 16)));
+        }
+    }
+}
+
+void SweepPage::showWidebandAlert(const PscWidebandAlert &alert)
+{
+    recordWidebandAlert(alert);
+    if (m_waterfall) {
+        m_waterfall->setAlertBand(alert);
+    }
+    if (m_widebandAlertLabel) {
+        m_widebandAlertLabel->setText(
+            QStringLiteral("⚠ 疑似无人机宽带信号（%1）：中心 %2 GHz｜带宽 %3 MHz｜峰值 %4 dBuV")
+                .arg(alert.bandwidthClass)
+                .arg(QString::number(alert.centerHz / 1000000000.0, 'f', 6))
+                .arg(QString::number(alert.bandwidthHz / 1000000.0, 'f', 1))
+                .arg(QString::number(alert.peakLevelDbuv, 'f', 1)));
+        m_widebandAlertLabel->show();
+    }
+}
+
+void SweepPage::recordWidebandAlert(const PscWidebandAlert &alert)
+{
+    const double alertToleranceHz = alert.centerToleranceHz >= 25000.0
+        ? alert.centerToleranceHz
+        : 25000.0;
+    for (PscWidebandAlert &recordedAlert : m_widebandAlertHistory) {
+        const double recordedToleranceHz = recordedAlert.centerToleranceHz >= 25000.0
+            ? recordedAlert.centerToleranceHz
+            : 25000.0;
+        const double matchingCenterToleranceHz = (std::max)(alertToleranceHz, recordedToleranceHz);
+        if (recordedAlert.bandwidthClass == alert.bandwidthClass
+            && qAbs(recordedAlert.centerHz - alert.centerHz) <= matchingCenterToleranceHz) {
+            recordedAlert = alert;
+            return;
+        }
+    }
+    m_widebandAlertHistory.append(alert);
 }
 
 void SweepPage::confirmSelectedCandidate()
@@ -829,6 +928,9 @@ void SweepPage::confirmSelectedCandidate()
         return;
     }
     if (!m_pscSweepActive) {
+        if (m_offlineReplayActive) {
+            stopOfflineReplay();
+        }
         emit frequencyConfirmed(frequencyHz);
         return;
     }

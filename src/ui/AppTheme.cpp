@@ -492,7 +492,8 @@ void AppTheme::apply(QApplication &app)
         }
 
         QFrame#RecognitionModelPanel,
-        QFrame#RecognitionSamplePanel {
+        QFrame#RecognitionSingleSamplePanel,
+        QFrame#RecognitionBatchPanel {
             background: #131d28;
             border: 1px solid rgba(148, 163, 184, 28);
             border-radius: 8px;

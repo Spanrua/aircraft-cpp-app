@@ -4,6 +4,8 @@
 #include <QtMath>
 #include <QtGlobal>
 
+#include <cmath>
+
 namespace
 {
 constexpr int kPlotLeftMargin = 72;
@@ -84,6 +86,27 @@ QString frequencyLabel(double frequencyHz)
 {
     return QStringLiteral("%1 MHz").arg(frequencyHz / 1000000.0, 0, 'f', 1);
 }
+
+bool alertFrequencyBounds(const PscWidebandAlert &alert, double *startHz, double *stopHz)
+{
+    if (std::isfinite(alert.centerHz)
+        && std::isfinite(alert.bandwidthHz)
+        && alert.bandwidthHz > 0.0) {
+        *startHz = alert.centerHz - alert.bandwidthHz / 2.0;
+        *stopHz = alert.centerHz + alert.bandwidthHz / 2.0;
+        return true;
+    }
+
+    if (std::isfinite(alert.startHz)
+        && std::isfinite(alert.stopHz)
+        && alert.stopHz > alert.startHz) {
+        *startHz = alert.startHz;
+        *stopHz = alert.stopHz;
+        return true;
+    }
+
+    return false;
+}
 } // namespace
 
 WaterfallWidget::WaterfallWidget(QWidget *parent)
@@ -148,6 +171,27 @@ int WaterfallWidget::frameCount() const
     return m_frames.size();
 }
 
+void WaterfallWidget::setAlertBand(const PscWidebandAlert &alert)
+{
+    m_alertBand = alert;
+    update();
+}
+
+void WaterfallWidget::clearAlertBand()
+{
+    if (!m_alertBand.has_value()) {
+        return;
+    }
+
+    m_alertBand.reset();
+    update();
+}
+
+bool WaterfallWidget::hasAlertBand() const
+{
+    return m_alertBand.has_value();
+}
+
 void WaterfallWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
@@ -199,7 +243,42 @@ void WaterfallWidget::paintEvent(QPaintEvent *event)
         }
     }
 
+    drawAlertBand(&painter, plot, axisStartHz, axisStopHz);
     drawAxes(&painter, plot, axisStartHz, axisStopHz);
+}
+
+void WaterfallWidget::drawAlertBand(QPainter *painter,
+                                    const QRect &plot,
+                                    double startHz,
+                                    double stopHz) const
+{
+    double alertStartHz = 0.0;
+    double alertStopHz = 0.0;
+    if (!m_alertBand.has_value()
+        || stopHz <= startHz
+        || !alertFrequencyBounds(*m_alertBand, &alertStartHz, &alertStopHz)
+        || alertStopHz <= startHz
+        || alertStartHz >= stopHz) {
+        return;
+    }
+
+    const double boundedStartHz = qMax(startHz, alertStartHz);
+    const double boundedStopHz = qMin(stopHz, alertStopHz);
+    const int rawLeft = plot.left() + frequencyToX(boundedStartHz, startHz, stopHz, plot.width());
+    const int rawRight = plot.left() + frequencyToX(boundedStopHz, startHz, stopHz, plot.width());
+    const int left = qBound(plot.left(), rawLeft, plot.right() + 1);
+    const int right = qBound(plot.left(), rawRight, plot.right() + 1);
+    if (right <= left) {
+        return;
+    }
+
+    painter->save();
+    painter->setClipRect(plot);
+    painter->fillRect(QRect(left, plot.top(), right - left, plot.height()), QColor(255, 153, 51, 60));
+    painter->setPen(QPen(QColor(255, 190, 92, 220), 1));
+    painter->drawLine(left, plot.top(), left, plot.bottom());
+    painter->drawLine(right - 1, plot.top(), right - 1, plot.bottom());
+    painter->restore();
 }
 
 void WaterfallWidget::drawAxes(QPainter *painter, const QRect &plot, double startHz, double stopHz) const

@@ -35,9 +35,15 @@ QString recognitionBackendDefaultPath()
 
 QString recognitionPythonDefaultPath()
 {
-    const QByteArray configured = qgetenv("AIRCRAFT_TRAINING_PYTHON");
-    if (!configured.isEmpty() && QFileInfo::exists(QString::fromLocal8Bit(configured))) {
-        return QFileInfo(QString::fromLocal8Bit(configured)).absoluteFilePath();
+    const QStringList configuredVariables = {
+        QStringLiteral("AIRCRAFT_TRAINING_PYTHON"),
+        QStringLiteral("AIRCRAFT_PREPROCESS_PYTHON"),
+    };
+    for (const QString &variable : configuredVariables) {
+        const QByteArray configured = qgetenv(variable.toLocal8Bit().constData());
+        if (!configured.isEmpty() && QFileInfo::exists(QString::fromLocal8Bit(configured))) {
+            return QFileInfo(QString::fromLocal8Bit(configured)).absoluteFilePath();
+        }
     }
     const QStringList candidates = {
         QDir(ProjectPaths::aircraftProjectRoot()).filePath(QStringLiteral("python_envs/aircraft_preprocess_gpu/Scripts/python.exe")),
@@ -224,6 +230,10 @@ void RecognitionProcessRunner::consumeLine(const QByteArray &line)
 void RecognitionProcessRunner::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
     readProcessOutput();
+    if (!m_stdoutBuffer.trimmed().isEmpty()) {
+        consumeLine(m_stdoutBuffer.trimmed());
+        m_stdoutBuffer.clear();
+    }
     finishResult(exitCode, exitStatus);
 }
 
@@ -250,9 +260,14 @@ void RecognitionProcessRunner::finishResult(int exitCode, QProcess::ExitStatus e
         m_result.success = false;
         m_result.modelPath = m_request.modelPath;
         m_result.samplePath = m_request.samplePath;
-        m_result.message = m_lastError.isEmpty()
-            ? QStringLiteral("识别进程失败，退出码 %1。").arg(exitCode)
-            : m_lastError;
+        const QString recentOutput = m_logs.mid(qMax(0, m_logs.size() - 6)).join(QLatin1Char('\n'));
+        m_result.message = !m_lastError.isEmpty()
+            ? m_lastError
+            : (recentOutput.isEmpty()
+                   ? QStringLiteral("识别进程失败，退出码 %1。").arg(exitCode)
+                   : QStringLiteral("识别进程失败，退出码 %1：\n%2")
+                         .arg(exitCode)
+                         .arg(recentOutput));
         emit failed(m_result.message);
     } else if (exitCode != 0 || exitStatus != QProcess::NormalExit) {
         m_result.success = false;

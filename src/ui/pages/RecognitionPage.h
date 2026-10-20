@@ -9,6 +9,7 @@
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QProgressBar;
 class QShowEvent;
@@ -32,15 +33,20 @@ signals:
 protected:
     void showEvent(QShowEvent *event) override;
 
+private slots:
+    void setBatchSamplePaths(const QStringList &samplePaths, const QString &segmentDirectory);
+
 private:
     void loadModels();
     void loadSamples();
+    void populateSampleCombo(const QString &filterText);
     void selectModelFromCombo();
     void selectSampleFromCombo();
     void chooseModel();
     void chooseSample();
     void chooseBatchSamples();
     void chooseBatchSampleDirectory();
+    void clearBatchSamples();
     void runRecognition();
     void runAllDatasetSamples();
     void retryFailedBatchSamples();
@@ -58,14 +64,17 @@ private:
     void updateRunAvailability();
     void updateProvenance();
     void updateCaptureSegmentSummary();
+    void updateBatchSelectionSummary();
     QVector<RecognitionRequest> availableBatchRequests() const;
 
     QComboBox *m_modelCombo = nullptr;
     QComboBox *m_sampleCombo = nullptr;
+    QLineEdit *m_sampleFilterEdit = nullptr;
     QLineEdit *m_samplePathEdit = nullptr;
     QLabel *m_modelSummary = nullptr;
     QLabel *m_sampleSummary = nullptr;
     QLabel *m_batchSampleSummary = nullptr;
+    QPlainTextEdit *m_batchSampleList = nullptr;
     QLabel *m_segmentSummary = nullptr;
     QLabel *m_resultDetail = nullptr;
     QLabel *m_provenanceLabel = nullptr;
@@ -75,6 +84,7 @@ private:
     QPushButton *m_chooseSampleButton = nullptr;
     QPushButton *m_chooseBatchSamplesButton = nullptr;
     QPushButton *m_chooseBatchDirectoryButton = nullptr;
+    QPushButton *m_clearBatchSamplesButton = nullptr;
     QPushButton *m_runButton = nullptr;
     QPushButton *m_batchRunButton = nullptr;
     QPushButton *m_cancelButton = nullptr;
