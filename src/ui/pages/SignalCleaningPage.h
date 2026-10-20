@@ -50,7 +50,7 @@ private:
     void showResult(const SignalCleaningResult &result);
     void rebuildPredictionTable();
     void updateSelectedPrediction();
-    void savePredictionsToState(const SignalCleaningResult &result);
+    bool savePredictionsToState(const SignalCleaningResult &result);
     void setBusy(bool busy);
     void updateStartAvailability();
     void setPageMessage(const QString &message, const QString &kind = QString());

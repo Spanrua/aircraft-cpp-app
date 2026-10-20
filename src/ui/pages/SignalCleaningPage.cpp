@@ -657,7 +657,14 @@ void SignalCleaningPage::showResult(const SignalCleaningResult &result)
         emit workflowStateChanged();
         return;
     }
-    savePredictionsToState(result);
+    if (!savePredictionsToState(result)) {
+        m_latestResult.success = false;
+        m_latestResult.message = QStringLiteral("图传模型判定已生成，但样本状态保存失败，不能进入人工复核。");
+        setPageMessage(m_latestResult.message, QStringLiteral("error"));
+        appendLog(m_latestResult.message);
+        emit workflowStateChanged();
+        return;
+    }
     m_totalMetric->setValue(QString::number(result.totalRecords));
     m_signalMetric->setValue(QString::number(result.signalRecords));
     m_noiseMetric->setValue(QString::number(result.noiseRecords));
@@ -756,7 +763,7 @@ void SignalCleaningPage::updateSelectedPrediction()
     }
 }
 
-void SignalCleaningPage::savePredictionsToState(const SignalCleaningResult &result)
+bool SignalCleaningPage::savePredictionsToState(const SignalCleaningResult &result)
 {
     AppStateStore store;
     AppState state = store.load().value_or(AppState{});
@@ -777,11 +784,13 @@ void SignalCleaningPage::savePredictionsToState(const SignalCleaningResult &resu
     }
     if (!store.save(state)) {
         appendLog(QStringLiteral("图传模型判定已生成，但样本状态保存失败：%1").arg(store.lastError()));
+        return false;
     } else {
         appendLog(QStringLiteral("已把 %1 / %2 个窗口判定写入样本状态，未修改人工复核状态。")
                       .arg(matched)
                       .arg(result.predictions.size()));
     }
+    return true;
 }
 
 void SignalCleaningPage::setBusy(bool busy)
