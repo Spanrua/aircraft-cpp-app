@@ -37,6 +37,11 @@ struct SampleRecord
     QString qualityStatus;
     QString pipelineVersion;
     QString sourceName;
+    double signalNoiseProbability = -1.0;
+    double signalNoiseThreshold = 0.5;
+    QString signalNoiseLabel;
+    QString signalNoiseModelPath;
+    QString signalNoiseRunId;
 
     QJsonObject toJson() const;
     static SampleRecord fromJson(const QJsonObject &json);
@@ -147,6 +152,9 @@ struct TrainingRunRecord
     QString modelMode = QStringLiteral("closed_set");
     bool modelAvailable = false;
     QString splitSummaryPath;
+    QString modelVerificationStatus = QStringLiteral("verified");
+    QString modelVerificationMessage;
+    QStringList modelClassNames;
 
     QJsonObject toJson() const;
     static TrainingRunRecord fromJson(const QJsonObject &json);

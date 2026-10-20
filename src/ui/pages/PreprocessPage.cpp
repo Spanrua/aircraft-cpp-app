@@ -83,6 +83,24 @@ QWidget *field(const QString &caption, QWidget *editor, QWidget *parent)
     return container;
 }
 
+QWidget *fieldWithHint(const QString &caption, const QString &hint, QWidget *editor, QWidget *parent)
+{
+    auto *container = new QWidget(parent);
+    auto *layout = new QVBoxLayout(container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    auto *label = new QLabel(caption, container);
+    label->setProperty("muted", true);
+    layout->addWidget(label);
+    layout->addWidget(editor);
+    auto *hintLabel = new QLabel(hint, container);
+    hintLabel->setWordWrap(true);
+    hintLabel->setProperty("muted", true);
+    hintLabel->setProperty("fieldHint", true);
+    layout->addWidget(hintLabel);
+    return container;
+}
+
 QTableWidgetItem *readonlyItem(const QString &text, const QString &path = QString())
 {
     auto *item = new QTableWidgetItem(text);
@@ -172,7 +190,7 @@ QString stateForResult(const PreprocessRunResult &result)
 
 PreprocessPage::PreprocessPage(QWidget *parent)
     : WorkflowPage(QStringLiteral("信号预处理"),
-                   QStringLiteral("确认采集文件，选择处理方案，生成可复核的候选片段和样本。"),
+                   QStringLiteral("确认采集文件，选择处理方案，生成供数据集页人工复核的候选片段和样本。"),
                    parent,
                    true)
 {
@@ -192,13 +210,34 @@ void PreprocessPage::setInputFilePath(const QString &filePath)
     if (path.isEmpty() || !QFileInfo::exists(path) || !m_capPathEdit) {
         return;
     }
+    const bool inputChanged = QFileInfo(m_capPathEdit->text()).absoluteFilePath()
+        != QFileInfo(path).absoluteFilePath();
     m_capPathEdit->setText(path);
     m_inputConfirmed = false;
+    if (inputChanged) {
+        m_latestResult = PreprocessRunResult();
+        if (m_segmentTable) {
+            m_segmentTable->setRowCount(0);
+        }
+        if (m_sampleTable) {
+            m_sampleTable->setRowCount(0);
+        }
+        if (m_nextDatasetButton) {
+            m_nextDatasetButton->setEnabled(false);
+        }
+        if (m_segmentMetric) {
+            m_segmentMetric->setValue(QStringLiteral("-"));
+        }
+        if (m_sampleMetric) {
+            m_sampleMetric->setValue(QStringLiteral("-"));
+        }
+    }
     setValidationMessage(QStringLiteral("采集文件已带入，请点击“读取并确认”后再开始处理。"), QStringLiteral("neutral"));
     m_inputFileSummaryLabel->setText(QStringLiteral("尚未确认输入文件：%1").arg(QFileInfo(path).fileName()));
     if (m_capMetric) {
         m_capMetric->setValue(QStringLiteral("待确认"));
     }
+    emit workflowStateChanged();
 }
 
 bool PreprocessPage::isInputConfirmed() const
@@ -216,12 +255,13 @@ bool PreprocessPage::hasResults() const
     return !m_latestResult.segments.isEmpty() || !m_latestResult.sampleRecords.isEmpty();
 }
 
+QString PreprocessPage::latestOutputDirectory() const
+{
+    return m_latestResult.batchDirectory;
+}
+
 void PreprocessPage::buildUi()
 {
-    if (auto *content = findChild<QWidget *>(QStringLiteral("WorkflowPageScrollContent"))) {
-        content->setMinimumHeight(980);
-    }
-
     auto *inputLayout = static_cast<QVBoxLayout *>(nullptr);
     auto *inputSection = sectionFrame(QStringLiteral("PreprocessInputColumn"), QStringLiteral("1. 确认输入文件"), this, &inputLayout);
 
@@ -305,6 +345,20 @@ void PreprocessPage::buildUi()
     outputLayout->addWidget(outputButton);
     inputLayout->addWidget(outputPanel);
 
+    auto *terminologyPanel = new QFrame(inputSection);
+    terminologyPanel->setObjectName(QStringLiteral("PreprocessTerminologyPanel"));
+    auto *terminologyLayout = new QVBoxLayout(terminologyPanel);
+    terminologyLayout->setContentsMargins(12, 10, 12, 10);
+    auto *terminologyLabel = new QLabel(
+        QStringLiteral("术语速查：I/Q 是同相/正交复数采样；IQRAW 是原始 I/Q 文件；CAP 是 USRP 原始采集文件；NPZ 是预处理后的样本包。"
+                       "UHD 是 USRP 驱动库；VISA 是 3943B 仪器通信接口；STFT 是短时傅里叶变换；nperseg 是每个 STFT 分析窗的采样点数。"),
+        terminologyPanel);
+    terminologyLabel->setObjectName(QStringLiteral("PreprocessTerminologyLabel"));
+    terminologyLabel->setWordWrap(true);
+    terminologyLabel->setProperty("muted", true);
+    terminologyLayout->addWidget(terminologyLabel);
+    inputLayout->addWidget(terminologyPanel);
+
     auto *parameterLayout = static_cast<QVBoxLayout *>(nullptr);
     auto *parameterSection = sectionFrame(QStringLiteral("PreprocessParametersColumn"), QStringLiteral("2. 选择处理方案"), this, &parameterLayout);
     auto *schemeGrid = new QGridLayout();
@@ -325,12 +379,30 @@ void PreprocessPage::buildUi()
     m_exportSpectrogramCheck = new QCheckBox(QStringLiteral("生成时频图，处理时间更长"), parameterSection);
     m_exportSpectrogramCheck->setObjectName(QStringLiteral("PreprocessExportSpectrogramCheck"));
     m_exportSpectrogramCheck->setChecked(false);
-    schemeGrid->addWidget(field(QStringLiteral("处理方案"), m_detectionModeCombo, parameterSection), 0, 0, 1, 2);
-    schemeGrid->addWidget(field(QStringLiteral("IQRAW 载荷字节序"), m_payloadEndianCombo, parameterSection), 1, 0);
+    schemeGrid->addWidget(fieldWithHint(QStringLiteral("处理方案"),
+                                         QStringLiteral("推荐识别适合常规 3943B 信号；能量、结构和固定频带模式用于明确的专项场景。"),
+                                         m_detectionModeCombo,
+                                         parameterSection),
+                          0,
+                          0,
+                          1,
+                          2);
+    schemeGrid->addWidget(fieldWithHint(QStringLiteral("IQRAW 载荷字节序"),
+                                         QStringLiteral("示例：小端 IQ；只有设备文档明确要求时才选择大端。"),
+                                         m_payloadEndianCombo,
+                                         parameterSection),
+                          1,
+                          0);
     schemeGrid->addWidget(m_exportSpectrogramCheck, 1, 1, Qt::AlignLeft | Qt::AlignVCenter);
     parameterLayout->addLayout(schemeGrid);
 
-    m_advancedParamsToggle = new QPushButton(QStringLiteral("展开专家设置"), parameterSection);
+    m_parameterModeLabel = new QLabel(QStringLiteral("当前模式：推荐模式（使用已验证的常规参数；适合首次处理）"), parameterSection);
+    m_parameterModeLabel->setObjectName(QStringLiteral("PreprocessParameterModeLabel"));
+    m_parameterModeLabel->setProperty("summary", true);
+    m_parameterModeLabel->setWordWrap(true);
+    parameterLayout->addWidget(m_parameterModeLabel);
+
+    m_advancedParamsToggle = new QPushButton(QStringLiteral("切换到专家模式"), parameterSection);
     m_advancedParamsToggle->setObjectName(QStringLiteral("PreprocessAdvancedParametersToggle"));
     m_advancedParamsToggle->setCheckable(true);
     m_advancedParamsToggle->setProperty("secondary", true);
@@ -364,10 +436,24 @@ void PreprocessPage::buildUi()
 
     m_advancedParamsPanel = new QFrame(parameterSection);
     m_advancedParamsPanel->setObjectName(QStringLiteral("PreprocessAdvancedParametersPanel"));
-    auto *advancedGrid = new QGridLayout(m_advancedParamsPanel);
-    advancedGrid->setContentsMargins(12, 12, 12, 12);
+    auto *advancedLayout = new QVBoxLayout(m_advancedParamsPanel);
+    advancedLayout->setContentsMargins(12, 12, 12, 12);
+    advancedLayout->setSpacing(8);
+    m_advancedParametersHelp = new QLabel(
+        QStringLiteral("专家参数说明：窗口采样点示例 4096（1024 到 262144），决定时间/频率分辨率；"
+                       "STFT nperseg 示例 2048（16 到 262144），noverlap 必须小于 nperseg；"
+                       "PNG nperseg 示例 512，仅在生成时频图时生效。数值越大通常频率分辨率更细，但处理时间和内存占用也会上升。"),
+        m_advancedParamsPanel);
+    m_advancedParametersHelp->setObjectName(QStringLiteral("PreprocessAdvancedParametersHelp"));
+    m_advancedParametersHelp->setWordWrap(true);
+    m_advancedParametersHelp->setProperty("muted", true);
+    advancedLayout->addWidget(m_advancedParametersHelp);
+
+    auto *advancedGrid = new QGridLayout();
+    advancedGrid->setContentsMargins(0, 0, 0, 0);
     advancedGrid->setHorizontalSpacing(12);
     advancedGrid->setVerticalSpacing(8);
+    advancedLayout->addLayout(advancedGrid);
     const QVector<QPair<QString, QLineEdit *>> advancedFields = {
         {QStringLiteral("窗口采样点"), m_windowSamplesEdit}, {QStringLiteral("分块采样点"), m_chunkSamplesEdit},
         {QStringLiteral("频率跨度 MHz"), m_frequencySpanEdit}, {QStringLiteral("能量偏移 dB"), m_energyOffsetEdit},
@@ -454,7 +540,7 @@ void PreprocessPage::buildUi()
     m_cancelButton->setObjectName(QStringLiteral("CancelPreprocessButton"));
     m_cancelButton->setProperty("secondary", true);
     m_cancelButton->setEnabled(false);
-    m_nextDatasetButton = new QPushButton(QStringLiteral("去数据集复核"), runSection);
+    m_nextDatasetButton = new QPushButton(QStringLiteral("去数据集人工复核"), runSection);
     m_nextDatasetButton->setObjectName(QStringLiteral("GoToDatasetButton"));
     m_nextDatasetButton->setProperty("secondary", true);
     m_nextDatasetButton->setEnabled(false);
@@ -476,7 +562,7 @@ void PreprocessPage::buildUi()
     m_logOutput->setVisible(false);
     runLayout->addWidget(m_logOutput);
 
-    auto *resultsPanel = new QGroupBox(QStringLiteral("4. 结果与复核"), this);
+    auto *resultsPanel = new QGroupBox(QStringLiteral("4. 结果预览与质量检查"), this);
     resultsPanel->setObjectName(QStringLiteral("PreprocessResultsPanel"));
     auto *resultsLayout = new QVBoxLayout(resultsPanel);
     resultsLayout->setContentsMargins(16, 16, 16, 16);
@@ -516,8 +602,8 @@ void PreprocessPage::buildUi()
     m_sampleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_sampleTable->setAlternatingRowColors(true);
     m_sampleTable->setHorizontalHeaderLabels({QStringLiteral("样本 ID"), QStringLiteral("候选片段"), QStringLiteral("中心频率"),
-                                               QStringLiteral("带宽"), QStringLiteral("评分"), QStringLiteral("候选局部图"),
-                                               QStringLiteral("复核状态")});
+                                                QStringLiteral("带宽"), QStringLiteral("评分"), QStringLiteral("候选局部图"),
+                                                QStringLiteral("当前人工复核状态")});
     m_sampleTable->horizontalHeader()->setStretchLastSection(true);
     m_sampleTable->verticalHeader()->setVisible(false);
     m_resultsTabs->addTab(m_sampleTable, QStringLiteral("输出样本"));
@@ -582,7 +668,10 @@ void PreprocessPage::buildUi()
     connect(m_nextDatasetButton, &QPushButton::clicked, this, &PreprocessPage::requestOpenDataset);
     connect(m_advancedParamsToggle, &QPushButton::toggled, this, [this](bool checked) {
         m_advancedParamsPanel->setVisible(checked);
-        m_advancedParamsToggle->setText(checked ? QStringLiteral("收起专家设置") : QStringLiteral("展开专家设置"));
+        m_advancedParamsToggle->setText(checked ? QStringLiteral("切换到推荐模式") : QStringLiteral("切换到专家模式"));
+        m_parameterModeLabel->setText(checked
+                                           ? QStringLiteral("当前模式：专家模式（可调整检测阈值和 STFT 参数；修改前请确认取值范围）")
+                                           : QStringLiteral("当前模式：推荐模式（使用已验证的常规参数；适合首次处理）"));
     });
     connect(detailsToggle, &QPushButton::toggled, this, [this, detailsToggle](bool checked) {
         m_logOutput->setVisible(checked);
@@ -605,16 +694,21 @@ void PreprocessPage::buildUi()
         if (result.success || result.partial || result.cancelled || result.timedOut) {
             m_nextDatasetButton->setEnabled(!result.sampleRecords.isEmpty());
         }
+        emit workflowStateChanged();
     });
     connect(m_processRunner, &PreprocessProcessRunner::failed, this, [this](const QString &message) {
         setBusy(false);
         setRunState(QStringLiteral("失败"), QStringLiteral("error"));
         setValidationMessage(message, QStringLiteral("error"));
         appendLog(QStringLiteral("预处理失败：%1").arg(message));
+        emit workflowStateChanged();
     });
     connect(m_processRunner, &PreprocessProcessRunner::cancelled, this, [this]() {
-        appendLog(QStringLiteral("任务已取消，已生成的文件保留在批次目录。"));
+        appendLog(QStringLiteral("任务已取消，正在整理并保留已生成文件。"));
+        setValidationMessage(QStringLiteral("已收到取消请求，正在整理已生成结果。"), QStringLiteral("neutral"));
+        emit workflowStateChanged();
     });
+
 }
 
 void PreprocessPage::previewCap()
@@ -647,6 +741,7 @@ void PreprocessPage::previewCap()
     }
     }
     appendLog(QStringLiteral("输入预览完成：%1").arg(path));
+    emit workflowStateChanged();
 }
 
 void PreprocessPage::runPreprocess()
@@ -695,28 +790,44 @@ void PreprocessPage::runPreprocess()
     if (m_computeBackendLabel) {
         m_computeBackendLabel->setText(QStringLiteral("计算后端：正在检查 CUDA GPU"));
     }
+    m_cancelRequested = false;
+    if (m_cancelButton) {
+        m_cancelButton->setText(QStringLiteral("取消并保留结果"));
+    }
     if (!m_processRunner->start(request, *capInfo)) {
         setBusy(false);
         setValidationMessage(QStringLiteral("无法启动预处理任务。"), QStringLiteral("error"));
     }
+    emit workflowStateChanged();
 }
 
 void PreprocessPage::cancelPreprocess()
 {
-    if (m_processRunner) {
-        m_processRunner->cancel();
-        if (m_cancelButton) {
-            m_cancelButton->setEnabled(false);
-        }
-        setRunState(QStringLiteral("正在取消"), QStringLiteral("running"));
+    if (!m_processRunner || !m_processRunner->isRunning() || m_cancelRequested) {
+        return;
     }
+
+    m_cancelRequested = true;
+    m_processRunner->cancel();
+    if (m_cancelButton) {
+        m_cancelButton->setText(QStringLiteral("正在保留结果"));
+        m_cancelButton->setEnabled(false);
+    }
+    setRunState(QStringLiteral("正在取消并保留已生成结果"), QStringLiteral("running"));
+    setValidationMessage(QStringLiteral("已请求取消。后台会整理当前已生成样本，完成后可去数据集复核。"), QStringLiteral("neutral"));
+    if (m_progressDetailLabel) {
+        m_progressDetailLabel->setText(QStringLiteral("正在写入取消标记，并等待预处理进程保存部分结果。"));
+    }
+    appendLog(QStringLiteral("已请求取消预处理：后台将保留已生成文件和样本记录。"));
 }
 
 void PreprocessPage::updateProgress(const PreprocessProgress &progress)
 {
     if (!progress.phase.isEmpty()) {
-        setRunState(progress.phase, QStringLiteral("running"));
+        setRunState(m_cancelRequested ? QStringLiteral("正在取消并保留已生成结果") : progress.phase,
+                    QStringLiteral("running"));
     }
+
     if (m_progressBar) {
         m_progressBar->setValue(progress.percent);
     }
@@ -744,9 +855,15 @@ void PreprocessPage::showPartialResult(const PreprocessRunResult &result)
 {
     showRunResult(result);
     if (m_processRunner && m_processRunner->isRunning()) {
-        setRunState(QStringLiteral("处理中，已生成部分结果"), QStringLiteral("running"));
-        m_qualitySummaryLabel->setText(QStringLiteral("已生成部分结果，任务仍在继续；当前结果可以先行复核。"));
+        if (m_cancelRequested) {
+            setRunState(QStringLiteral("正在取消并保留已生成结果"), QStringLiteral("running"));
+            m_qualitySummaryLabel->setText(QStringLiteral("已生成部分结果，取消完成后可去数据集页人工复核。"));
+        } else {
+            setRunState(QStringLiteral("处理中，已生成部分结果"), QStringLiteral("running"));
+            m_qualitySummaryLabel->setText(QStringLiteral("已生成部分结果，任务仍在继续；当前仅供预览和质量检查。"));
+        }
     }
+
 }
 
 void PreprocessPage::showRunResult(const PreprocessRunResult &result)
@@ -763,7 +880,7 @@ void PreprocessPage::showRunResult(const PreprocessRunResult &result)
         m_segmentTable->setItem(row, 4, readonlyItem(mhz(segment.bandwidthHz)));
         m_segmentTable->setItem(row, 5, readonlyItem(QString::number(segment.snrDb, 'f', 2)));
         m_segmentTable->setItem(row, 6, readonlyItem(QString::number(segment.score, 'f', 3)));
-        m_segmentTable->setItem(row, 7, readonlyItem(segment.status == QStringLiteral("valid") ? QStringLiteral("可复核") : QStringLiteral("需检查")));
+        m_segmentTable->setItem(row, 7, readonlyItem(segment.status == QStringLiteral("valid") ? QStringLiteral("已生成") : QStringLiteral("需检查")));
     }
     m_sampleTable->setRowCount(0);
     for (const SampleRecord &record : result.sampleRecords) {
@@ -795,7 +912,7 @@ void PreprocessPage::showRunResult(const PreprocessRunResult &result)
         metric->setValue(result.averageSnrDb > 0.0 ? QStringLiteral("%1 dB").arg(result.averageSnrDb, 0, 'f', 2) : QStringLiteral("-"));
     }
     m_qualitySummaryLabel->setText(result.qualitySummary.isEmpty()
-                                       ? (result.partial ? QStringLiteral("部分结果，建议复核后再训练。") : QStringLiteral("结果已生成，可进入数据集页。"))
+                                       ? (result.partial ? QStringLiteral("部分结果，建议在数据集页人工复核后再训练。") : QStringLiteral("结果已生成，可进入数据集页人工复核。"))
                                        : result.qualitySummary);
     m_resultsTabs->setCurrentWidget(result.sampleRecords.isEmpty() ? m_segmentTable : m_sampleTable);
     if (result.cancelled) {
@@ -1048,9 +1165,14 @@ void PreprocessPage::savePreprocessBatch(const PreprocessRunResult &result)
 
 void PreprocessPage::setBusy(bool busy)
 {
+    if (!busy) {
+        m_cancelRequested = false;
+    }
     m_runButton->setEnabled(!busy);
-    m_cancelButton->setEnabled(busy);
+    m_cancelButton->setEnabled(busy && !m_cancelRequested);
+    m_cancelButton->setText(m_cancelRequested ? QStringLiteral("正在保留结果") : QStringLiteral("取消并保留结果"));
     m_previewButton->setEnabled(!busy);
+
     m_capPathEdit->setEnabled(!busy);
     m_outputDirEdit->setEnabled(!busy);
     const QVector<QWidget *> controls = {

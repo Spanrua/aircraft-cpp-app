@@ -28,9 +28,11 @@ public:
     bool isInputConfirmed() const;
     bool isRunning() const;
     bool hasResults() const;
+    QString latestOutputDirectory() const;
 
 signals:
     void requestOpenDataset();
+    void workflowStateChanged();
 
 private:
     void buildUi();
@@ -90,6 +92,8 @@ private:
     QLabel *m_headerLengthLabel = nullptr;
     QLabel *m_sampleCountLabel = nullptr;
     QLabel *m_validationMessage = nullptr;
+    QLabel *m_parameterModeLabel = nullptr;
+    QLabel *m_advancedParametersHelp = nullptr;
     QLabel *m_runStateLabel = nullptr;
     QLabel *m_outputSummaryLabel = nullptr;
     QLabel *m_inputFileSummaryLabel = nullptr;
@@ -120,5 +124,6 @@ private:
     QWidget *m_advancedParamsPanel = nullptr;
     PreprocessProcessRunner *m_processRunner = nullptr;
     PreprocessRunResult m_latestResult;
+    bool m_cancelRequested = false;
     bool m_inputConfirmed = false;
 };

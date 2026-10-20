@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -167,14 +168,15 @@ class TrainingBackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._dataset(root)
-            closed = build_command(
-                TrainingConfig(root, root / "closed", require_cuda=True),
-                python_executable="python-test",
-            )
-            opened = build_command(
-                TrainingConfig(root, root / "open", model_mode="open_set", require_cuda=True),
-                python_executable="python-test",
-            )
+            with patch("training_backend.cuda_available", return_value=True):
+                closed = build_command(
+                    TrainingConfig(root, root / "closed", require_cuda=True),
+                    python_executable="python-test",
+                )
+                opened = build_command(
+                    TrainingConfig(root, root / "open", model_mode="open_set", require_cuda=True),
+                    python_executable="python-test",
+                )
             self.assertIn("--require-cuda", closed)
             self.assertIn("--require-cuda", opened)
 

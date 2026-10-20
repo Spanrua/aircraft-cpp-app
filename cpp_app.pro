@@ -28,12 +28,14 @@ SOURCES += \
     src/ui/pages/DatasetPage.cpp \
     src/ui/pages/PreprocessPage.cpp \
     src/ui/pages/RecognitionPage.cpp \
+    src/ui/pages/SweepPage.cpp \
     src/ui/pages/TrainPage.cpp \
     src/ui/pages/WorkflowPage.cpp \
     src/ui/widgets/IllustrationPanel.cpp \
     src/ui/widgets/MetricCard.cpp \
     src/ui/widgets/StatusBadge.cpp \
     src/ui/widgets/StepNavigator.cpp \
+    src/ui/widgets/SpectrogramReviewWidget.cpp \
     src/ui/widgets/WaterfallWidget.cpp
 
 HEADERS += \
@@ -58,12 +60,14 @@ HEADERS += \
     src/ui/pages/DatasetPage.h \
     src/ui/pages/PreprocessPage.h \
     src/ui/pages/RecognitionPage.h \
+    src/ui/pages/SweepPage.h \
     src/ui/pages/TrainPage.h \
     src/ui/pages/WorkflowPage.h \
     src/ui/widgets/IllustrationPanel.h \
     src/ui/widgets/MetricCard.h \
     src/ui/widgets/StatusBadge.h \
     src/ui/widgets/StepNavigator.h \
+    src/ui/widgets/SpectrogramReviewWidget.h \
     src/ui/widgets/WaterfallWidget.h
 
 INCLUDEPATH += $$PWD/src

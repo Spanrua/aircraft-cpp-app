@@ -18,5 +18,7 @@ public:
 private:
     QString m_stateFilePath;
     QString m_lastError;
+    bool m_loadAttempted = false;
+    bool m_loadFailed = false;
+    bool m_stateFileMissing = false;
 };
-

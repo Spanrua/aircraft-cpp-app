@@ -5,7 +5,7 @@
 void AppTheme::apply(QApplication &app)
 {
     app.setStyle(QStringLiteral("Fusion"));
-    app.setStyleSheet(QStringLiteral(R"(
+    const QString baseTheme = QStringLiteral(R"(
         QWidget {
             background: #101820;
             color: #e7edf4;
@@ -58,10 +58,81 @@ void AppTheme::apply(QApplication &app)
             padding: 20px;
         }
 
-        QWidget#DatasetCategorySelectionPanel, QWidget#DatasetReviewPanel {
+        QWidget#DatasetCategorySelectionPanel, QWidget#DatasetReviewWorkbench {
             background: #151f2a;
             border: 1px solid rgba(148, 163, 184, 34);
             border-radius: 10px;
+        }
+
+        QFrame#SignalCleaningModelPanel,
+        QFrame#SignalCleaningInputPanel,
+        QFrame#SignalCleaningProgressPanel,
+        QFrame#SignalCleaningResultsPanel {
+            background: #131d28;
+            border: 1px solid rgba(148, 163, 184, 28);
+            border-radius: 8px;
+        }
+
+        QLabel#SignalCleaningModelSummary,
+        QLabel#SignalCleaningProgressDetail,
+        QLabel#SignalCleaningPredictionDetail,
+        QLabel#SignalCleaningPageMessage {
+            background: rgba(255, 255, 255, 10);
+            border: 1px solid rgba(148, 163, 184, 30);
+            border-radius: 8px;
+            padding: 8px 10px;
+        }
+
+        QLabel#SignalCleaningPageMessage[kind="good"] {
+            background: rgba(16, 185, 129, 28);
+            border-color: rgba(16, 185, 129, 78);
+            color: #a7f3d0;
+        }
+
+        QLabel#SignalCleaningPageMessage[kind="warning"] {
+            background: rgba(245, 158, 11, 22);
+            border-color: rgba(245, 158, 11, 68);
+            color: #fcd58d;
+        }
+
+        QLabel#SignalCleaningPageMessage[kind="error"] {
+            background: rgba(239, 68, 68, 28);
+            border-color: rgba(239, 68, 68, 78);
+            color: #fecaca;
+        }
+
+        QLabel#SignalCleaningRunStateLabel {
+            background: rgba(255, 255, 255, 10);
+            border: 1px solid rgba(148, 163, 184, 30);
+            border-radius: 999px;
+            padding: 8px 11px;
+            color: #cbd8e6;
+        }
+
+        QLabel#SignalCleaningRunStateLabel[state="running"] {
+            background: rgba(59, 130, 246, 30);
+            border-color: rgba(96, 165, 250, 90);
+            color: #dbeafe;
+        }
+
+        QProgressBar#SignalCleaningProgressBar {
+            min-height: 16px;
+            border: 1px solid rgba(148, 163, 184, 34);
+            border-radius: 7px;
+            background: #0f1720;
+            text-align: center;
+            color: #dbeafe;
+        }
+
+        QProgressBar#SignalCleaningProgressBar::chunk {
+            border-radius: 6px;
+            background: #3b82f6;
+        }
+
+        QWidget#SignalCleaningSpectrogramWidget {
+            background: #071018;
+            border: 1px solid rgba(96, 165, 250, 70);
+            border-radius: 8px;
         }
 
         QLabel#DatasetCategorySelectionTitle, QLabel#DatasetReviewTitle, QLabel#DatasetVersionSectionTitle,
@@ -421,7 +492,8 @@ void AppTheme::apply(QApplication &app)
         }
 
         QFrame#RecognitionModelPanel,
-        QFrame#RecognitionSamplePanel {
+        QFrame#RecognitionSingleSamplePanel,
+        QFrame#RecognitionBatchPanel {
             background: #131d28;
             border: 1px solid rgba(148, 163, 184, 28);
             border-radius: 8px;
@@ -462,5 +534,46 @@ void AppTheme::apply(QApplication &app)
             color: #9fb0c1;
             border-top: 1px solid rgba(148, 163, 184, 22);
         }
-    )"));
+    )");
+
+    const QString workflowTheme = QStringLiteral(R"(
+        QLabel#WorkflowStatusBanner,
+        QLabel#WorkflowNextActionLabel,
+        QLabel#SignalCleaningWorkflowGateLabel {
+            background: rgba(255, 255, 255, 10);
+            border: 1px solid rgba(148, 163, 184, 34);
+            border-radius: 8px;
+            padding: 8px 10px;
+            color: #cbd8e6;
+        }
+
+        QLabel#WorkflowStatusBanner[kind="good"],
+        QLabel#SignalCleaningWorkflowGateLabel[kind="good"] {
+            background: rgba(16, 185, 129, 22);
+            border-color: rgba(16, 185, 129, 68);
+            color: #a7f3d0;
+        }
+
+        QLabel#WorkflowStatusBanner[kind="warning"],
+        QLabel#SignalCleaningWorkflowGateLabel[kind="warning"] {
+            background: rgba(245, 158, 11, 22);
+            border-color: rgba(245, 158, 11, 68);
+            color: #fcd58d;
+        }
+
+        QLabel#WorkflowStatusBanner[kind="running"] {
+            background: rgba(59, 130, 246, 22);
+            border-color: rgba(96, 165, 250, 68);
+            color: #dbeafe;
+        }
+
+        QPushButton:disabled {
+            color: #94a3b8;
+        }
+
+        QPushButton:focus {
+            border-color: #93c5fd;
+        }
+    )");
+    app.setStyleSheet(baseTheme + workflowTheme);
 }

@@ -48,6 +48,7 @@ private:
     QVector<int> selectedCandidateIndices() const;
     QVector<int> sampleIndicesForCandidates(const QVector<int> &candidateIndices) const;
     bool isSampleEligible(const SampleRecord &sample) const;
+    bool matchesSignalNoiseFilter(const SampleRecord &sample) const;
     bool isPartialSample(const SampleRecord &sample) const;
     bool isReviewedSample(const SampleRecord &sample) const;
     bool saveSamplesToState(const QString &successMessage);
@@ -56,6 +57,7 @@ private:
     QLabel *m_emptyState = nullptr;
     QLabel *m_pageMessage = nullptr;
     QLabel *m_reviewSelectionLabel = nullptr;
+    QLabel *m_reviewQueueLabel = nullptr;
     MetricCard *m_totalSamplesMetric = nullptr;
     MetricCard *m_selectedSamplesMetric = nullptr;
     MetricCard *m_selectedCategoriesMetric = nullptr;
@@ -66,6 +68,7 @@ private:
     QTableWidget *m_table = nullptr;
     QTableWidget *m_versionTable = nullptr;
     QComboBox *m_stateFilter = nullptr;
+    QComboBox *m_signalNoiseFilter = nullptr;
     QCheckBox *m_includePartialCheck = nullptr;
     QCheckBox *m_includePendingReviewCheck = nullptr;
     QPushButton *m_generateVersionButton = nullptr;

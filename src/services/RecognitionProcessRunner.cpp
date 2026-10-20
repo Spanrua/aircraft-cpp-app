@@ -35,9 +35,15 @@ QString recognitionBackendDefaultPath()
 
 QString recognitionPythonDefaultPath()
 {
-    const QByteArray configured = qgetenv("AIRCRAFT_TRAINING_PYTHON");
-    if (!configured.isEmpty() && QFileInfo::exists(QString::fromLocal8Bit(configured))) {
-        return QFileInfo(QString::fromLocal8Bit(configured)).absoluteFilePath();
+    const QStringList configuredVariables = {
+        QStringLiteral("AIRCRAFT_TRAINING_PYTHON"),
+        QStringLiteral("AIRCRAFT_PREPROCESS_PYTHON"),
+    };
+    for (const QString &variable : configuredVariables) {
+        const QByteArray configured = qgetenv(variable.toLocal8Bit().constData());
+        if (!configured.isEmpty() && QFileInfo::exists(QString::fromLocal8Bit(configured))) {
+            return QFileInfo(QString::fromLocal8Bit(configured)).absoluteFilePath();
+        }
     }
     const QStringList candidates = {
         QDir(ProjectPaths::aircraftProjectRoot()).filePath(QStringLiteral("python_envs/aircraft_preprocess_gpu/Scripts/python.exe")),
@@ -187,6 +193,20 @@ void RecognitionProcessRunner::consumeLine(const QByteArray &line)
         m_result.predictedType = json.value(QStringLiteral("predicted_type")).toString();
         m_result.predictedIndividual = json.value(QStringLiteral("predicted_individual")).toString();
         m_result.confidence = json.value(QStringLiteral("confidence")).toDouble();
+        m_result.classProbabilities.clear();
+        for (const QJsonValue &value : json.value(QStringLiteral("class_probabilities")).toArray()) {
+            const QJsonObject probability = value.toObject();
+            const QString label = probability.value(QStringLiteral("label")).toString().trimmed();
+            if (label.isEmpty()) {
+                continue;
+            }
+            const double rawValue = probability.contains(QStringLiteral("probability"))
+                ? probability.value(QStringLiteral("probability")).toDouble()
+                : probability.value(QStringLiteral("confidence")).toDouble() / 100.0;
+            if (rawValue >= 0.0) {
+                m_result.classProbabilities.insert(label, rawValue);
+            }
+        }
         m_result.device = json.value(QStringLiteral("device")).toString();
         m_result.modelSize = json.value(QStringLiteral("model_size")).toString();
         m_result.featureMode = json.value(QStringLiteral("feature_mode")).toString();
@@ -210,6 +230,10 @@ void RecognitionProcessRunner::consumeLine(const QByteArray &line)
 void RecognitionProcessRunner::handleProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
     readProcessOutput();
+    if (!m_stdoutBuffer.trimmed().isEmpty()) {
+        consumeLine(m_stdoutBuffer.trimmed());
+        m_stdoutBuffer.clear();
+    }
     finishResult(exitCode, exitStatus);
 }
 
@@ -227,13 +251,23 @@ void RecognitionProcessRunner::finishResult(int exitCode, QProcess::ExitStatus e
         return;
     }
     m_resultEmitted = true;
+    QProcess *finishedProcess = m_process;
+    m_process = nullptr;
+    if (finishedProcess) {
+        finishedProcess->deleteLater();
+    }
     if (!m_completedEventSeen) {
         m_result.success = false;
         m_result.modelPath = m_request.modelPath;
         m_result.samplePath = m_request.samplePath;
-        m_result.message = m_lastError.isEmpty()
-            ? QStringLiteral("识别进程失败，退出码 %1。").arg(exitCode)
-            : m_lastError;
+        const QString recentOutput = m_logs.mid(qMax(0, m_logs.size() - 6)).join(QLatin1Char('\n'));
+        m_result.message = !m_lastError.isEmpty()
+            ? m_lastError
+            : (recentOutput.isEmpty()
+                   ? QStringLiteral("识别进程失败，退出码 %1。").arg(exitCode)
+                   : QStringLiteral("识别进程失败，退出码 %1：\n%2")
+                         .arg(exitCode)
+                         .arg(recentOutput));
         emit failed(m_result.message);
     } else if (exitCode != 0 || exitStatus != QProcess::NormalExit) {
         m_result.success = false;
@@ -241,10 +275,6 @@ void RecognitionProcessRunner::finishResult(int exitCode, QProcess::ExitStatus e
         emit failed(m_result.message);
     }
     emit finished(m_result);
-    if (m_process) {
-        m_process->deleteLater();
-        m_process = nullptr;
-    }
 }
 
 void RecognitionProcessRunner::appendLog(const QString &message)

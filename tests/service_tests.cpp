@@ -13,6 +13,7 @@
 #include "services/CeyearVisaQuery.h"
 #include "services/CeyearVisaService.h"
 #include "services/PreprocessProcessRunner.h"
+#include "services/RecognitionProcessRunner.h"
 #include "services/UsrpDeviceService.h"
 
 #include <QTcpSocket>
@@ -43,6 +44,7 @@ private slots:
     void appStateStorePersistsRecordsAndVersions();
     void appStateStoreDoesNotOverwriteInvalidState();
     void projectPathsUsesConfiguredCppAppRootForPortableRuntime();
+    void recognitionRunnerUsesConfiguredPreprocessGpuPython();
     void candidateReviewGroupsAggregateAndIsolateSources();
     void candidateReviewGroupsSelectRepresentativeWindows();
     void capProbeReadsCurrentTrialHeaderFormat();
@@ -390,6 +392,34 @@ void ServiceTests::projectPathsUsesConfiguredCppAppRootForPortableRuntime()
         qunsetenv("AIRCRAFT_CPP_APP_ROOT");
     } else {
         qputenv("AIRCRAFT_CPP_APP_ROOT", previousRoot);
+    }
+}
+
+void ServiceTests::recognitionRunnerUsesConfiguredPreprocessGpuPython()
+{
+    QTemporaryDir runtimeDir;
+    QVERIFY(runtimeDir.isValid());
+    const QString gpuPythonPath = runtimeDir.filePath(QStringLiteral("python.exe"));
+    QFile gpuPython(gpuPythonPath);
+    QVERIFY(gpuPython.open(QIODevice::WriteOnly));
+    gpuPython.close();
+
+    const QByteArray previousTrainingPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousPreprocessPython = qgetenv("AIRCRAFT_PREPROCESS_PYTHON");
+    qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    QVERIFY(qputenv("AIRCRAFT_PREPROCESS_PYTHON", gpuPythonPath.toUtf8()));
+
+    QCOMPARE(RecognitionProcessRunner::pythonExecutablePath(), QFileInfo(gpuPythonPath).absoluteFilePath());
+
+    if (previousTrainingPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousTrainingPython);
+    }
+    if (previousPreprocessPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_PREPROCESS_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_PREPROCESS_PYTHON", previousPreprocessPython);
     }
 }
 

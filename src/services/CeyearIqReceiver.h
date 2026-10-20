@@ -8,7 +8,7 @@
 
 #include <memory>
 
-class QFile;
+class QSaveFile;
 class QTcpServer;
 class QTcpSocket;
 class QUdpSocket;
@@ -27,7 +27,7 @@ struct CeyearIqReceiverConfig
     QString outputFilePath;
     int timeoutMs = 5000;
     int targetSampleCount = 0;
-    int dataIdleFinishMs = 300;
+    int dataIdleFinishMs = 2000;
     int firstByteWaitMs = 3000;
 };
 
@@ -64,12 +64,13 @@ signals:
 
 private:
     bool openOutputFile(QString *error);
+    void discardOutputFile();
     void appendBytes(const QByteArray &bytes);
     void parseSampleCount(const QByteArray &bytes);
     CeyearIqReceiverResult makeResult(bool success, const QString &message) const;
 
     CeyearIqReceiverConfig m_config;
-    std::unique_ptr<QFile> m_file;
+    std::unique_ptr<QSaveFile> m_file;
     std::unique_ptr<QTcpServer> m_tcpServer;
     QPointer<QTcpSocket> m_tcpSocket;
     std::unique_ptr<QUdpSocket> m_udpSocket;

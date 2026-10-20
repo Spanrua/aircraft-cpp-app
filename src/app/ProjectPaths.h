@@ -16,6 +16,8 @@ public:
     static QString preprocessRunsDirectory();
     static QString preprocessProfilesDirectory();
     static QString modelsDirectory();
+    static QString signalNoiseModelDirectory();
+    static QString signalCleaningRunsDirectory();
     static QString exportsDirectory();
     static QString trainingCacheDirectory();
     static bool ensureRuntimeDirectories(QString *errorMessage = nullptr);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMetaType>
+#include <QMap>
 #include <QProcess>
 #include <QString>
 #include <QStringList>
@@ -21,6 +22,7 @@ struct RecognitionResult
     QString predictedType;
     QString predictedIndividual;
     double confidence = 0.0;
+    QMap<QString, double> classProbabilities;
     QStringList topCandidates;
     QString device;
     QString modelSize;

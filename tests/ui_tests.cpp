@@ -475,14 +475,16 @@ private slots:
     void datasetPageShowsReviewQueueAndKeyboardActions();
     void trainPageExposesBackendControls();
     void recognitionPageExposesModelAndSampleWorkflow();
+    void recognitionPageFiltersRegisteredSamplesAndShowsSelectedFile();
     void recognitionPageRegistersExternalModelForReuse();
     void recognitionPageMarksBareExternalModelUnverified();
     void recognitionPageForwardsSelectedSampleIndex();
+    void recognitionPageShowsBackendStartupFailureOutput();
     void recognitionPageEnablesBatchAfterSelectingExternalSamples();
     void recognitionPageEnablesBatchAfterSelectingExternalSampleDirectory();
     void recognitionPageFusesFolderWindowsAsOneCaptureSegment();
     void recognitionPageMapsDroneIndividualToProtocolType();
-    void recognitionPageBatchRecognizesAllDatasetSamples();
+    void recognitionPageBatchRecognizesOnlySelectedFiles();
     void recognitionPageBatchShowsProgressAndLocksInputs();
     void recognitionPageRetriesFailedBatchSamples();
     void recognitionPageShowsResultProvenance();
@@ -1757,6 +1759,47 @@ void UiTests::recognitionPageExposesModelAndSampleWorkflow()
     QVERIFY(!runButton->isEnabled());
 }
 
+void UiTests::recognitionPageFiltersRegisteredSamplesAndShowsSelectedFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString firstPath = dir.filePath(QStringLiteral("air3s_01_chunk00000.npz"));
+    const QString secondPath = dir.filePath(QStringLiteral("air3s_02_chunk00000.npz"));
+    for (const QString &path : {firstPath, secondPath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+
+    AppState state;
+    SampleRecord first;
+    first.sampleId = QStringLiteral("sample-air3s-01");
+    first.sampleFilePath = firstPath;
+    first.labelType = QStringLiteral("air3s");
+    first.labelIndividual = QStringLiteral("air3s_01");
+    state.samples.append(first);
+    SampleRecord second = first;
+    second.sampleId = QStringLiteral("sample-air3s-02");
+    second.sampleFilePath = secondPath;
+    second.labelIndividual = QStringLiteral("air3s_02");
+    state.samples.append(second);
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    RecognitionPage page;
+    auto *filter = page.findChild<QLineEdit *>(QStringLiteral("RecognitionSampleFilterEdit"));
+    auto *sampleCombo = page.findChild<QComboBox *>(QStringLiteral("RecognitionSampleCombo"));
+    auto *selectedPath = page.findChild<QLineEdit *>(QStringLiteral("RecognitionSamplePathEdit"));
+    QVERIFY(filter != nullptr);
+    QVERIFY(sampleCombo != nullptr);
+    QVERIFY(selectedPath != nullptr);
+
+    filter->setText(QStringLiteral("air3s_02"));
+    QTRY_COMPARE(sampleCombo->count(), 1);
+    QCOMPARE(sampleCombo->currentText(), QStringLiteral("air3s_02 · air3s_02_chunk00000.npz"));
+    QCOMPARE(selectedPath->text(), secondPath);
+}
+
 void UiTests::recognitionPageRegistersExternalModelForReuse()
 {
     AppStateStore stateStore;
@@ -1865,7 +1908,8 @@ print(json.dumps({
     SampleRecord sample;
     sample.sampleId = QStringLiteral("sample-001");
     sample.sampleFilePath = samplePath;
-    sample.sampleIndex = 7;
+    sample.sampleIndex = 84; // Dataset-wide ordinal, intentionally not local.
+    sample.windowIndex = 7;
     state.samples.append(sample);
     AppStateStore stateStore;
     QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
@@ -1886,6 +1930,71 @@ print(json.dumps({
     QTest::mouseClick(runButton, Qt::LeftButton);
     QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("window-7")));
     QVERIFY(exportButton->isEnabled());
+
+    if (previousPython.isEmpty()) {
+        qunsetenv("AIRCRAFT_TRAINING_PYTHON");
+    } else {
+        qputenv("AIRCRAFT_TRAINING_PYTHON", previousPython);
+    }
+    if (previousBackend.isEmpty()) {
+        qunsetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    } else {
+        qputenv("AIRCRAFT_RECOGNITION_BACKEND", previousBackend);
+    }
+}
+
+void UiTests::recognitionPageShowsBackendStartupFailureOutput()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
+
+    const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
+    const QString samplePath = dir.filePath(QStringLiteral("sample.npz"));
+    const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
+    for (const QString &path : {modelPath, samplePath}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("fixture");
+    }
+    QFile backend(backendPath);
+    QVERIFY(backend.open(QIODevice::WriteOnly | QIODevice::Text));
+    backend.write(R"PY(import sys
+print("ImportError: required runtime module is missing", flush=True)
+raise SystemExit(1)
+)PY");
+    backend.close();
+
+    AppState state;
+    TrainingRunRecord run;
+    run.runId = QStringLiteral("run-startup-error");
+    run.datasetVersionId = QStringLiteral("dataset-startup-error");
+    run.state = QStringLiteral("已完成");
+    run.modelMode = QStringLiteral("closed_set");
+    run.modelAvailable = true;
+    run.bestModelPath = modelPath;
+    state.trainingRuns.append(run);
+    state.activeTrainingRunId = run.runId;
+    SampleRecord sample;
+    sample.sampleId = QStringLiteral("sample-startup-error");
+    sample.sampleFilePath = samplePath;
+    state.samples.append(sample);
+    AppStateStore stateStore;
+    QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
+
+    const QByteArray previousPython = qgetenv("AIRCRAFT_TRAINING_PYTHON");
+    const QByteArray previousBackend = qgetenv("AIRCRAFT_RECOGNITION_BACKEND");
+    qputenv("AIRCRAFT_TRAINING_PYTHON", pythonPath.toLocal8Bit());
+    qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
+
+    RecognitionPage page;
+    auto *runButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunButton"));
+    auto *resultDetail = page.findChild<QLabel *>(QStringLiteral("RecognitionResultDetail"));
+    QVERIFY(runButton != nullptr);
+    QVERIFY(resultDetail != nullptr);
+    QTest::mouseClick(runButton, Qt::LeftButton);
+    QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("required runtime module is missing")));
 
     if (previousPython.isEmpty()) {
         qunsetenv("AIRCRAFT_TRAINING_PYTHON");
@@ -1928,13 +2037,28 @@ void UiTests::recognitionPageEnablesBatchAfterSelectingExternalSamples()
     RecognitionPage page;
     auto *chooseBatchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseBatchSamplesButton"));
     auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
+    auto *clearBatchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionClearBatchSamplesButton"));
+    auto *batchSummary = page.findChild<QLabel *>(QStringLiteral("RecognitionBatchSampleSummary"));
+    auto *batchList = page.findChild<QPlainTextEdit *>(QStringLiteral("RecognitionBatchSampleList"));
     QVERIFY(chooseBatchButton != nullptr);
     QVERIFY(batchButton != nullptr);
+    QVERIFY(clearBatchButton != nullptr);
+    QVERIFY(batchSummary != nullptr);
+    QVERIFY(batchList != nullptr);
     QVERIFY(!batchButton->isEnabled());
 
-    selectFileInActiveDialog(samplePath);
-    QTest::mouseClick(chooseBatchButton, Qt::LeftButton);
-    QTRY_VERIFY(batchButton->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(&page, "setBatchSamplePaths", Qt::DirectConnection,
+                                      Q_ARG(QStringList, QStringList{samplePath}),
+                                      Q_ARG(QString, QString())));
+    QVERIFY(batchButton->isEnabled());
+    QCOMPARE(batchButton->text(), QStringLiteral("识别这 1 个文件"));
+    QVERIFY(batchSummary->text().contains(QStringLiteral("本次将识别 1 个文件")));
+    QVERIFY(batchList->toPlainText().contains(QStringLiteral("external_sample.npz")));
+
+    QTest::mouseClick(clearBatchButton, Qt::LeftButton);
+    QVERIFY(!batchButton->isEnabled());
+    QVERIFY(batchList->toPlainText().isEmpty());
+    QVERIFY(batchSummary->text().contains(QStringLiteral("未选择批量文件")));
 }
 
 void UiTests::recognitionPageEnablesBatchAfterSelectingExternalSampleDirectory()
@@ -1975,10 +2099,15 @@ void UiTests::recognitionPageEnablesBatchAfterSelectingExternalSampleDirectory()
     QVERIFY(summary != nullptr);
     QVERIFY(!batchButton->isEnabled());
 
-    selectDirectoryInActiveDialog(samplesDirectory);
-    QTest::mouseClick(chooseDirectoryButton, Qt::LeftButton);
-    QTRY_VERIFY(batchButton->isEnabled());
-    QTRY_VERIFY(summary->text().contains(QStringLiteral("2 个 NPZ 样本")));
+    const QStringList directoryBatchPaths = {
+        samplesDirectory + QStringLiteral("/first.npz"),
+        samplesDirectory + QStringLiteral("/nested/second.NPZ"),
+    };
+    QVERIFY(QMetaObject::invokeMethod(&page, "setBatchSamplePaths", Qt::DirectConnection,
+                                      Q_ARG(QStringList, directoryBatchPaths),
+                                      Q_ARG(QString, samplesDirectory)));
+    QVERIFY(batchButton->isEnabled());
+    QTRY_VERIFY(summary->text().contains(QStringLiteral("本次将识别 2 个文件")));
 }
 
 void UiTests::recognitionPageFusesFolderWindowsAsOneCaptureSegment()
@@ -2062,9 +2191,15 @@ print(json.dumps({
     QVERIFY(segmentSummary != nullptr);
     QVERIFY(resultTable != nullptr);
 
-    selectDirectoryInActiveDialog(samplesDirectory);
-    QTest::mouseClick(chooseDirectoryButton, Qt::LeftButton);
-    QTRY_VERIFY(batchButton->isEnabled());
+    const QStringList segmentBatchPaths = {
+        samplesDirectory + QStringLiteral("/window_1.npz"),
+        samplesDirectory + QStringLiteral("/window_2.npz"),
+        samplesDirectory + QStringLiteral("/window_3.npz"),
+    };
+    QVERIFY(QMetaObject::invokeMethod(&page, "setBatchSamplePaths", Qt::DirectConnection,
+                                      Q_ARG(QStringList, segmentBatchPaths),
+                                      Q_ARG(QString, samplesDirectory)));
+    QVERIFY(batchButton->isEnabled());
     QTest::mouseClick(batchButton, Qt::LeftButton);
     QTRY_COMPARE(resultTable->rowCount(), 3);
     QTRY_VERIFY(segmentSummary->text().contains(QStringLiteral("段级结论：O4 · Air3s")));
@@ -2111,8 +2246,8 @@ print(json.dumps({
     "type": "completed",
     "model_path": argument("--model"),
     "sample_path": argument("--sample"),
-    "predicted_type": "Air3s",
-    "predicted_individual": "Air3s",
+    "predicted_type": "air3s_01",
+    "predicted_individual": "air3s_01",
     "confidence": 98.0,
     "top_candidates": [],
     "device": "fixture",
@@ -2152,7 +2287,7 @@ print(json.dumps({
     QTest::mouseClick(runButton, Qt::LeftButton);
     QTRY_COMPARE(resultTable->rowCount(), 1);
     QCOMPARE(resultTable->item(0, 1)->text(), QStringLiteral("O4"));
-    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("Air3s"));
+    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("Air3s_01"));
 
     if (previousPython.isEmpty()) {
         qunsetenv("AIRCRAFT_TRAINING_PYTHON");
@@ -2166,7 +2301,7 @@ print(json.dumps({
     }
 }
 
-void UiTests::recognitionPageBatchRecognizesAllDatasetSamples()
+void UiTests::recognitionPageBatchRecognizesOnlySelectedFiles()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -2174,8 +2309,10 @@ void UiTests::recognitionPageBatchRecognizesAllDatasetSamples()
     QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
 
     const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
-    const QString firstSamplePath = dir.filePath(QStringLiteral("first_sample.npz"));
-    const QString secondSamplePath = dir.filePath(QStringLiteral("second_sample.npz"));
+    const QString samplesDirectory = dir.filePath(QStringLiteral("selected_batch"));
+    QVERIFY(QDir().mkpath(samplesDirectory));
+    const QString firstSamplePath = samplesDirectory + QStringLiteral("/first_sample.npz");
+    const QString secondSamplePath = samplesDirectory + QStringLiteral("/second_sample.npz");
     const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
     for (const QString &path : {modelPath, firstSamplePath, secondSamplePath}) {
         QFile file(path);
@@ -2220,12 +2357,14 @@ print(json.dumps({
     SampleRecord firstSample;
     firstSample.sampleId = QStringLiteral("sample-001");
     firstSample.sampleFilePath = firstSamplePath;
-    firstSample.sampleIndex = 3;
+    firstSample.sampleIndex = 84; // First window in a later NPZ chunk.
+    firstSample.windowIndex = 3;
     state.samples.append(firstSample);
     SampleRecord secondSample;
     secondSample.sampleId = QStringLiteral("sample-002");
     secondSample.sampleFilePath = secondSamplePath;
-    secondSample.sampleIndex = 8;
+    secondSample.sampleIndex = 157; // Dataset-wide ordinal, intentionally not local.
+    secondSample.windowIndex = 8;
     state.samples.append(secondSample);
     AppStateStore stateStore;
     QVERIFY2(stateStore.save(state), qPrintable(stateStore.lastError()));
@@ -2236,18 +2375,26 @@ print(json.dumps({
     qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
 
     RecognitionPage page;
+    auto *chooseDirectoryButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseBatchDirectoryButton"));
     auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
     auto *resultDetail = page.findChild<QLabel *>(QStringLiteral("RecognitionResultDetail"));
     auto *resultTable = page.findChild<QTableWidget *>(QStringLiteral("RecognitionResultTable"));
+    QVERIFY(chooseDirectoryButton != nullptr);
     QVERIFY(batchButton != nullptr);
     QVERIFY(resultDetail != nullptr);
     QVERIFY(resultTable != nullptr);
+    QVERIFY(!batchButton->isEnabled());
+    const QStringList selectedBatchPaths = {firstSamplePath, secondSamplePath};
+    QVERIFY(QMetaObject::invokeMethod(&page, "setBatchSamplePaths", Qt::DirectConnection,
+                                      Q_ARG(QStringList, selectedBatchPaths),
+                                      Q_ARG(QString, QString())));
     QVERIFY(batchButton->isEnabled());
     QTest::mouseClick(batchButton, Qt::LeftButton);
     QTRY_COMPARE(resultTable->rowCount(), 2);
-    QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("批量识别完成：成功 2/2，失败 0")));
-    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("window-3"));
-    QCOMPARE(resultTable->item(1, 2)->text(), QStringLiteral("window-8"));
+    QTRY_VERIFY2(resultDetail->text().contains(QStringLiteral("批量识别完成：成功 2/2，失败 0")),
+                  qPrintable(resultDetail->text()));
+    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("window-0"));
+    QCOMPARE(resultTable->item(1, 2)->text(), QStringLiteral("window-0"));
 
     if (previousPython.isEmpty()) {
         qunsetenv("AIRCRAFT_TRAINING_PYTHON");
@@ -2269,8 +2416,10 @@ void UiTests::recognitionPageBatchShowsProgressAndLocksInputs()
     QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
 
     const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
-    const QString firstSamplePath = dir.filePath(QStringLiteral("first_sample.npz"));
-    const QString secondSamplePath = dir.filePath(QStringLiteral("second_sample.npz"));
+    const QString samplesDirectory = dir.filePath(QStringLiteral("progress_batch"));
+    QVERIFY(QDir().mkpath(samplesDirectory));
+    const QString firstSamplePath = samplesDirectory + QStringLiteral("/first_sample.npz");
+    const QString secondSamplePath = samplesDirectory + QStringLiteral("/second_sample.npz");
     const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
     for (const QString &path : {modelPath, firstSamplePath, secondSamplePath}) {
         QFile file(path);
@@ -2329,17 +2478,25 @@ print(json.dumps({
     qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
 
     RecognitionPage page;
+    auto *chooseDirectoryButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseBatchDirectoryButton"));
     auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
     auto *refreshButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRefreshButton"));
     auto *chooseModelButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseModelButton"));
     auto *chooseSampleButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseSampleButton"));
     auto *progress = page.findChild<QProgressBar *>(QStringLiteral("RecognitionBatchProgressBar"));
+    QVERIFY(chooseDirectoryButton != nullptr);
     QVERIFY(batchButton != nullptr);
     QVERIFY(refreshButton != nullptr);
     QVERIFY(chooseModelButton != nullptr);
     QVERIFY(chooseSampleButton != nullptr);
     QVERIFY(progress != nullptr);
 
+    QVERIFY(!batchButton->isEnabled());
+    const QStringList progressBatchPaths = {firstSamplePath, secondSamplePath};
+    QVERIFY(QMetaObject::invokeMethod(&page, "setBatchSamplePaths", Qt::DirectConnection,
+                                      Q_ARG(QStringList, progressBatchPaths),
+                                      Q_ARG(QString, QString())));
+    QVERIFY(batchButton->isEnabled());
     QTest::mouseClick(batchButton, Qt::LeftButton);
     QTRY_COMPARE(progress->maximum(), 2);
     QVERIFY(!batchButton->isEnabled());
@@ -2369,8 +2526,10 @@ void UiTests::recognitionPageRetriesFailedBatchSamples()
     QVERIFY2(!pythonPath.isEmpty(), "Python is required for the recognition runner UI test.");
 
     const QString modelPath = dir.filePath(QStringLiteral("best_model.pth"));
-    const QString failedSamplePath = dir.filePath(QStringLiteral("failed_sample.npz"));
-    const QString successfulSamplePath = dir.filePath(QStringLiteral("successful_sample.npz"));
+    const QString samplesDirectory = dir.filePath(QStringLiteral("retry_batch"));
+    QVERIFY(QDir().mkpath(samplesDirectory));
+    const QString failedSamplePath = samplesDirectory + QStringLiteral("/failed_sample.npz");
+    const QString successfulSamplePath = samplesDirectory + QStringLiteral("/successful_sample.npz");
     const QString backendPath = dir.filePath(QStringLiteral("recognition_backend.py"));
     for (const QString &path : {modelPath, failedSamplePath, successfulSamplePath}) {
         QFile file(path);
@@ -2389,7 +2548,7 @@ def argument(name):
 sample_index = argument("--sample-index")
 retry_marker = os.path.join(os.path.dirname(__file__), "retry-marker")
 print(json.dumps({"type": "started"}), flush=True)
-if sample_index == "3" and not os.path.exists(retry_marker):
+if os.path.basename(argument("--sample")) == "failed_sample.npz" and not os.path.exists(retry_marker):
     open(retry_marker, "w").close()
     print(json.dumps({"type": "failed", "error": "temporary fixture failure"}), flush=True)
     sys.exit(1)
@@ -2437,22 +2596,30 @@ print(json.dumps({
     qputenv("AIRCRAFT_RECOGNITION_BACKEND", backendPath.toLocal8Bit());
 
     RecognitionPage page;
+    auto *chooseDirectoryButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionChooseBatchDirectoryButton"));
     auto *batchButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRunAllSamplesButton"));
     auto *retryButton = page.findChild<QPushButton *>(QStringLiteral("RecognitionRetryFailedButton"));
     auto *resultDetail = page.findChild<QLabel *>(QStringLiteral("RecognitionResultDetail"));
     auto *resultTable = page.findChild<QTableWidget *>(QStringLiteral("RecognitionResultTable"));
+    QVERIFY(chooseDirectoryButton != nullptr);
     QVERIFY(batchButton != nullptr);
     QVERIFY(retryButton != nullptr);
     QVERIFY(resultDetail != nullptr);
     QVERIFY(resultTable != nullptr);
 
+    QVERIFY(!batchButton->isEnabled());
+    const QStringList retryBatchPaths = {failedSamplePath, successfulSamplePath};
+    QVERIFY(QMetaObject::invokeMethod(&page, "setBatchSamplePaths", Qt::DirectConnection,
+                                      Q_ARG(QStringList, retryBatchPaths),
+                                      Q_ARG(QString, QString())));
+    QVERIFY(batchButton->isEnabled());
     QTest::mouseClick(batchButton, Qt::LeftButton);
     QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("失败 1")));
     QVERIFY(retryButton->isEnabled());
     QTest::mouseClick(retryButton, Qt::LeftButton);
     QTRY_COMPARE(resultTable->rowCount(), 1);
     QTRY_VERIFY(resultDetail->text().contains(QStringLiteral("批量识别完成：成功 1/1，失败 0")));
-    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("window-3"));
+    QCOMPARE(resultTable->item(0, 2)->text(), QStringLiteral("window-0"));
     QVERIFY(!retryButton->isEnabled());
 
     if (previousPython.isEmpty()) {
