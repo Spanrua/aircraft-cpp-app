@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include "app/ProjectPaths.h"
 #include "core/Records.h"
 #include "services/AppStateStore.h"
 #include "services/CandidateReviewService.h"
@@ -11,6 +12,7 @@
 #include "services/CeyearVisaQuery.h"
 #include "services/CeyearVisaService.h"
 #include "services/PreprocessProcessRunner.h"
+#include "services/SignalCleaningProcessRunner.h"
 #include "services/UsrpDeviceService.h"
 
 #include <QTcpSocket>
@@ -22,6 +24,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -37,6 +40,8 @@ private slots:
     void sampleRecordRoundTripsThroughJson();
     void trainingRunRecordRoundTripsThroughJson();
     void appStateStorePersistsRecordsAndVersions();
+    void appStateStoreDoesNotOverwriteInvalidState();
+    void projectPathsUsesConfiguredCppAppRootForPortableRuntime();
     void candidateReviewGroupsAggregateAndIsolateSources();
     void candidateReviewGroupsSelectRepresentativeWindows();
     void capProbeReadsCurrentTrialHeaderFormat();
@@ -46,6 +51,8 @@ private slots:
     void preprocessRunnerTimesOutHungProcess();
     void preprocessFailureResponseDoesNotBuildSamples();
     void preprocessSampleRecordsKeepNpzWindowMetadata();
+    void signalCleaningStartupFailureFinishesOnceWithoutCrashing();
+    void signalCleaningRejectsHeaderOnlyResultCsv();
     void usrpCaptureWriterCreatesReadableCapFile();
     void usrpCaptureWriterAcceptsSc16Samples();
     void ceyearStatusQueriesAreReadOnlyAndCoverCoreState();
@@ -75,11 +82,16 @@ private slots:
     void ceyearPscCandidateExtractorPromotesPersistentPeaks();
     void ceyearPscCandidateExtractorUsesConfiguredHitThreshold();
     void ceyearPscSweepCsvWriterPersistsFrameBins();
+    void ceyearPscSweepCsvReaderRestoresSortedFrames();
+    void ceyearPscSweepCsvReaderSkipsZeroFrequencySentinelBins();
+    void ceyearPscSweepCsvReaderRejectsMissingColumnsAndInvalidRows();
     void ceyearPscSweepQueriesAreWritableAndServiceExposesInterface();
     void ceyearIqReceiverWritesTcpPayloadToPcFile();
     void ceyearIqReceiverKeepsTcpStreamOpenForCaptureWindow();
+    void ceyearIqReceiverPreservesExistingFileWhenStartFails();
     void ceyearIqReceiverWritesUdpPayloadToPcFile();
     void ceyearIqReceiverStopsAtTargetSampleCount();
+    void ceyearIqReceiverWaitsForDelayedTargetPackets();
     void ceyearIqReceiverStopsWhenTargetStreamGoesIdle();
     void ceyearIqReceiverCancelStopsTargetWait();
 };
@@ -313,6 +325,48 @@ void ServiceTests::appStateStorePersistsRecordsAndVersions()
     QCOMPARE(loaded->datasetVersions.first().selectedLabels, QStringList({"DJI", "Autel"}));
     QCOMPARE(loaded->datasetVersions.first().manifestPath, version.manifestPath);
     QVERIFY(loaded->datasetVersions.first().includePartial);
+}
+
+void ServiceTests::appStateStoreDoesNotOverwriteInvalidState()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString path = dir.filePath(QStringLiteral("app_state.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write("{ invalid json");
+    file.close();
+
+    AppStateStore store(path);
+    QVERIFY(!store.load().has_value());
+
+    AppState replacement;
+    QVERIFY(!store.save(replacement));
+    QVERIFY(store.lastError().contains(QStringLiteral("拒绝覆盖")));
+
+    QFile preserved(path);
+    QVERIFY(preserved.open(QIODevice::ReadOnly));
+    QCOMPARE(preserved.readAll(), QByteArray("{ invalid json"));
+}
+
+void ServiceTests::projectPathsUsesConfiguredCppAppRootForPortableRuntime()
+{
+    QTemporaryDir runtimeDir;
+    QVERIFY(runtimeDir.isValid());
+
+    const QByteArray previousRoot = qgetenv("AIRCRAFT_CPP_APP_ROOT");
+    QVERIFY(qputenv("AIRCRAFT_CPP_APP_ROOT", runtimeDir.path().toUtf8()));
+
+    const QString expectedRoot = QFileInfo(runtimeDir.path()).absoluteFilePath();
+    QCOMPARE(ProjectPaths::cppAppRoot(), expectedRoot);
+    QCOMPARE(ProjectPaths::dataDirectory(), QDir(expectedRoot).filePath(QStringLiteral("data")));
+
+    if (previousRoot.isEmpty()) {
+        qunsetenv("AIRCRAFT_CPP_APP_ROOT");
+    } else {
+        qputenv("AIRCRAFT_CPP_APP_ROOT", previousRoot);
+    }
 }
 
 void ServiceTests::candidateReviewGroupsAggregateAndIsolateSources()
@@ -740,6 +794,88 @@ void ServiceTests::preprocessSampleRecordsKeepNpzWindowMetadata()
     QCOMPARE(records.first().score, 0.91);
     QCOMPARE(records.first().spectrogramFilePath, sampleRecord.spectrogramFilePath);
     QCOMPARE(records.first().candidatePreviewFilePath, sampleRecord.candidatePreviewFilePath);
+}
+
+void ServiceTests::signalCleaningStartupFailureFinishesOnceWithoutCrashing()
+{
+    QTemporaryDir directory(QDir(ProjectPaths::dataDirectory())
+                                .filePath(QStringLiteral("signal-cleaning-start-XXXXXX")));
+    QVERIFY(directory.isValid());
+
+    const QString modelPath = directory.filePath(QStringLiteral("model.pt"));
+    QFile modelFile(modelPath);
+    QVERIFY(modelFile.open(QIODevice::WriteOnly));
+    modelFile.close();
+
+    const QString backendPath = directory.filePath(QStringLiteral("backend.py"));
+    QFile backendFile(backendPath);
+    QVERIFY(backendFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    backendFile.write("raise RuntimeError('must not execute')\n");
+    backendFile.close();
+
+    const QString inputRoot = directory.filePath(QStringLiteral("input"));
+    QVERIFY(QDir().mkpath(inputRoot));
+
+    SignalCleaningRequest request;
+    request.modelPath = modelPath;
+    request.backendScriptPath = backendPath;
+    request.inputRoot = inputRoot;
+    request.outputDirectory = directory.filePath(QStringLiteral("output"));
+
+    SignalCleaningProcessRunner runner;
+    QSignalSpy failedSpy(&runner, &SignalCleaningProcessRunner::failed);
+    QSignalSpy finishedSpy(&runner, &SignalCleaningProcessRunner::finished);
+
+    QVERIFY(!runner.start(request, directory.filePath(QStringLiteral("missing-python.exe"))));
+    QCOMPARE(failedSpy.count(), 1);
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY(!runner.isRunning());
+}
+
+void ServiceTests::signalCleaningRejectsHeaderOnlyResultCsv()
+{
+    QTemporaryDir directory(QDir(ProjectPaths::dataDirectory())
+                                .filePath(QStringLiteral("signal-cleaning-invalid-result-XXXXXX")));
+    QVERIFY(directory.isValid());
+
+    const QString pythonPath = QStandardPaths::findExecutable(QStringLiteral("python"));
+    QVERIFY2(!pythonPath.isEmpty(), "Python is required for the signal-cleaning result validation test.");
+
+    const QString modelPath = directory.filePath(QStringLiteral("model.pt"));
+    QFile modelFile(modelPath);
+    QVERIFY(modelFile.open(QIODevice::WriteOnly));
+    modelFile.close();
+
+    const QString backendPath = directory.filePath(QStringLiteral("header_only_backend.py"));
+    QFile backendFile(backendPath);
+    QVERIFY(backendFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    backendFile.write(R"(import json
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[sys.argv.index("--output-csv") + 1])
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text("path,index,sample_id,group,prob_signal,prediction\\n", encoding="utf-8")
+output.with_suffix(".json").write_text(json.dumps({"records": 0, "threshold": 0.5}), encoding="utf-8")
+)");
+    backendFile.close();
+
+    const QString inputRoot = directory.filePath(QStringLiteral("input"));
+    QVERIFY(QDir().mkpath(inputRoot));
+
+    SignalCleaningRequest request;
+    request.modelPath = modelPath;
+    request.backendScriptPath = backendPath;
+    request.inputRoot = inputRoot;
+    request.outputDirectory = directory.filePath(QStringLiteral("output"));
+
+    SignalCleaningProcessRunner runner;
+    QSignalSpy finishedSpy(&runner, &SignalCleaningProcessRunner::finished);
+    QVERIFY(runner.start(request, pythonPath));
+    QTRY_COMPARE(finishedSpy.count(), 1);
+
+    const SignalCleaningResult result = qvariant_cast<SignalCleaningResult>(finishedSpy.takeFirst().at(0));
+    QVERIFY(!result.success);
 }
 
 void ServiceTests::usrpCaptureWriterCreatesReadableCapFile()
@@ -1624,6 +1760,86 @@ void ServiceTests::ceyearPscSweepCsvWriterPersistsFrameBins()
     QVERIFY(error.contains(QStringLiteral("No PSC sweep frames")));
 }
 
+void ServiceTests::ceyearPscSweepCsvReaderRestoresSortedFrames()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString filePath = dir.filePath(QStringLiteral("sweep.csv"));
+    QFile file(filePath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("level_dbuv,source,frame_index,bin_index,frequency_hz\n"
+               "-35.0,demo,1,1,901000000\n"
+               "-72.0,demo,0,1,900500000\n"
+               "-71.0,demo,0,0,900000000\n"
+               "-34.0,demo,1,0,900000000\n");
+    file.close();
+
+    QVector<CeyearPscFrame> frames;
+    QString error;
+    QVERIFY2(loadCeyearPscFramesCsv(filePath, &frames, &error), qPrintable(error));
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(frames.at(0).bins.size(), 2);
+    QCOMPARE(frames.at(0).bins.at(0).frequencyHz, 900000000.0);
+    QCOMPARE(frames.at(0).bins.at(1).frequencyHz, 900500000.0);
+    QCOMPARE(frames.at(1).bins.at(0).levelDbuv, -34.0);
+}
+
+void ServiceTests::ceyearPscSweepCsvReaderSkipsZeroFrequencySentinelBins()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString filePath = dir.filePath(QStringLiteral("sentinel.csv"));
+    QFile file(filePath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("frame_index,bin_index,frequency_hz,level_dbuv\n"
+               "0,0,5725000000,-1.6\n"
+               "0,1,0,200.0\n"
+               "0,2,5725010000,2.4\n"
+               "1,0,5725000000,-1.7\n");
+    file.close();
+
+    QVector<CeyearPscFrame> frames;
+    QString error;
+    QVERIFY2(loadCeyearPscFramesCsv(filePath, &frames, &error), qPrintable(error));
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(frames.at(0).bins.size(), 2);
+    QCOMPARE(frames.at(0).bins.at(0).frequencyHz, 5725000000.0);
+    QCOMPARE(frames.at(0).bins.at(1).frequencyHz, 5725010000.0);
+    QCOMPARE(frames.at(1).bins.size(), 1);
+}
+
+void ServiceTests::ceyearPscSweepCsvReaderRejectsMissingColumnsAndInvalidRows()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString missingColumnPath = dir.filePath(QStringLiteral("missing.csv"));
+    QFile missingColumnFile(missingColumnPath);
+    QVERIFY(missingColumnFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    missingColumnFile.write("frame_index,bin_index,frequency_hz\n0,0,900000000\n");
+    missingColumnFile.close();
+
+    QVector<CeyearPscFrame> frames;
+    QString error;
+    QVERIFY(!loadCeyearPscFramesCsv(missingColumnPath, &frames, &error));
+    QVERIFY(frames.isEmpty());
+    QVERIFY(!error.isEmpty());
+
+    const QString invalidRowPath = dir.filePath(QStringLiteral("invalid.csv"));
+    QFile invalidRowFile(invalidRowPath);
+    QVERIFY(invalidRowFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    invalidRowFile.write("frame_index,bin_index,frequency_hz,level_dbuv\n"
+                         "0,0,not-a-number,-35.0\n");
+    invalidRowFile.close();
+
+    error.clear();
+    QVERIFY(!loadCeyearPscFramesCsv(invalidRowPath, &frames, &error));
+    QVERIFY(frames.isEmpty());
+    QVERIFY(!error.isEmpty());
+}
+
 void ServiceTests::ceyearPscSweepQueriesAreWritableAndServiceExposesInterface()
 {
     CeyearPscSweepConfig config;
@@ -1789,6 +2005,65 @@ void ServiceTests::ceyearIqReceiverStopsAtTargetSampleCount()
     QFile file(config.outputFilePath);
     QVERIFY(file.open(QIODevice::ReadOnly));
     QCOMPARE(file.readAll(), packet);
+}
+
+void ServiceTests::ceyearIqReceiverWaitsForDelayedTargetPackets()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    CeyearIqReceiver receiver;
+    CeyearIqReceiverConfig config;
+    config.protocol = CeyearIqReceiveProtocol::Udp;
+    config.bindAddress = QStringLiteral("127.0.0.1");
+    config.port = 0;
+    config.outputFilePath = dir.filePath("delayed_target.iqraw");
+    config.targetSampleCount = 3;
+
+    QString error;
+    QVERIFY2(receiver.start(config, &error), qPrintable(error));
+    QVERIFY(receiver.boundPort() > 0);
+
+    QUdpSocket sender;
+    const QByteArray firstPacket = ceyearIfPacket({{qint16(1), qint16(-1)}, {qint16(2), qint16(-2)}});
+    QCOMPARE(sender.writeDatagram(firstPacket, QHostAddress::LocalHost, receiver.boundPort()),
+             qint64(firstPacket.size()));
+
+    QTimer::singleShot(500, &sender, [&sender, &receiver]() {
+        const QByteArray delayedPacket = ceyearIfPacket({{qint16(3), qint16(-3)}});
+        sender.writeDatagram(delayedPacket, QHostAddress::LocalHost, receiver.boundPort());
+    });
+
+    const CeyearIqReceiverResult result = receiver.waitForFinished(-1);
+    QVERIFY2(result.success, qPrintable(result.message));
+    QCOMPARE(result.sampleCount, qint64(3));
+    QCOMPARE(result.bytesReceived, qint64(firstPacket.size() + ceyearIfPacket({{qint16(3), qint16(-3)}}).size()));
+}
+
+void ServiceTests::ceyearIqReceiverPreservesExistingFileWhenStartFails()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString outputPath = dir.filePath(QStringLiteral("existing.iqraw"));
+    QFile existing(outputPath);
+    QVERIFY(existing.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    existing.write("existing-data");
+    existing.close();
+
+    CeyearIqReceiver receiver;
+    CeyearIqReceiverConfig config;
+    config.protocol = CeyearIqReceiveProtocol::Udp;
+    config.bindAddress = QStringLiteral("not-an-ip-address");
+    config.port = 5030;
+    config.outputFilePath = outputPath;
+
+    QString error;
+    QVERIFY(!receiver.start(config, &error));
+    QVERIFY(!error.isEmpty());
+
+    QVERIFY(existing.open(QIODevice::ReadOnly));
+    QCOMPARE(existing.readAll(), QByteArray("existing-data"));
 }
 
 void ServiceTests::ceyearIqReceiverStopsWhenTargetStreamGoesIdle()

@@ -110,6 +110,13 @@ def infer(model_path: Path, sample_path: Path, sample_index: int = 0) -> dict[st
         }
         for value, index in zip(values.detach().cpu(), indices.detach().cpu())
     ]
+    class_probabilities = [
+        {
+            "label": label,
+            "probability": float(probability),
+        }
+        for label, probability in zip(trainer.CLASS_NAMES, probabilities.detach().cpu())
+    ]
     predicted = top_candidates[0]
     return {
         "model_path": str(model_path),
@@ -117,6 +124,7 @@ def infer(model_path: Path, sample_path: Path, sample_index: int = 0) -> dict[st
         "predicted_type": predicted["label"],
         "predicted_individual": predicted["label"],
         "confidence": predicted["confidence"],
+        "class_probabilities": class_probabilities,
         "top_candidates": top_candidates,
         "device": str(trainer.device),
         "model_size": model_arch,
