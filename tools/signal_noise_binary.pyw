@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import random
 from collections import Counter, OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
@@ -424,11 +426,22 @@ def train(args: argparse.Namespace) -> int:
 
 
 def _load_model(model_path: Path, device: torch.device) -> tuple[SignalNoiseCNN, float]:
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError("模型检查点必须是包含 model 和 threshold 字段的映射。")
+    state_dict = checkpoint.get("model")
+    if not isinstance(state_dict, Mapping):
+        raise ValueError("模型检查点缺少有效的 model 权重映射。")
+    try:
+        threshold = float(checkpoint.get("threshold", 0.5))
+    except (TypeError, ValueError) as error:
+        raise ValueError("模型检查点 threshold 必须是 0 到 1 之间的数字。") from error
+    if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+        raise ValueError("模型检查点 threshold 必须在 0 到 1 之间。")
     model = SignalNoiseCNN().to(device)
-    model.load_state_dict(checkpoint["model"])
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
-    return model, float(checkpoint.get("threshold", 0.5))
+    return model, threshold
 
 
 def predict(args: argparse.Namespace) -> int:
