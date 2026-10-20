@@ -194,10 +194,32 @@ bool SignalCleaningPage::hasConfiguredModel() const
 
 void SignalCleaningPage::setInputRootPath(const QString &path)
 {
-    if (!path.trimmed().isEmpty() && QFileInfo(path).exists()) {
-        m_inputRootEdit->setText(QFileInfo(path).absoluteFilePath());
-        emit workflowStateChanged();
+    if (path.trimmed().isEmpty() || !QFileInfo(path).exists()) {
+        return;
     }
+    const QString inputRoot = QFileInfo(path).absoluteFilePath();
+    const bool inputChanged = normalizedPath(m_inputRootEdit->text()) != normalizedPath(inputRoot);
+    if (!inputChanged) {
+        return;
+    }
+
+    m_inputRootEdit->setText(inputRoot);
+    m_latestResult = SignalCleaningResult();
+    m_visiblePredictions.clear();
+    m_predictionTable->setRowCount(0);
+    m_spectrogramReviewWidget->clearImage();
+    m_totalMetric->setValue(QStringLiteral("-"));
+    m_signalMetric->setValue(QStringLiteral("-"));
+    m_noiseMetric->setValue(QStringLiteral("-"));
+    m_modelledMetric->setValue(QStringLiteral("-"));
+    m_predictionDetailLabel->setText(QStringLiteral("预处理输出已变更，请重新清洗后选择窗口查看详情。"));
+    m_nextDatasetButton->setEnabled(false);
+    m_runStateLabel->setText(QStringLiteral("待清洗"));
+    m_runStateLabel->setProperty("state", QVariant());
+    m_runStateLabel->style()->unpolish(m_runStateLabel);
+    m_runStateLabel->style()->polish(m_runStateLabel);
+    setPageMessage(QStringLiteral("预处理输出已变更，请重新执行信号清洗。"), QStringLiteral("warning"));
+    emit workflowStateChanged();
 }
 
 void SignalCleaningPage::setWorkflowExecutionAllowed(bool allowed, const QString &reason)
